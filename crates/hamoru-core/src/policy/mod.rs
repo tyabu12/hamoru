@@ -4,12 +4,21 @@
 //! to routing rules, which select a policy that determines the optimal model
 //! based on constraints (cost, latency, quality) and preferences.
 
+pub mod config;
+
 use std::time::Duration;
 
 use crate::Result;
 use crate::error::HamoruError;
 use crate::provider::LlmProvider;
 use crate::telemetry::MetricsCache;
+
+// Re-export config types that don't conflict with Phase 0 placeholders.
+// PolicyConfig re-export deferred to Commit 2 when the placeholder is replaced.
+pub use config::{
+    CostLimits, DefaultPolicy, MatchRule, PolicyConstraints, PolicyDefinition,
+    PolicyPreferences, Priority, QualityTier, RoutingRule,
+};
 
 /// Intent-based model selection engine.
 ///
