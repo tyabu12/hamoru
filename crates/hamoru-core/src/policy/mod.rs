@@ -5,6 +5,7 @@
 //! based on constraints (cost, latency, quality) and preferences.
 
 pub mod config;
+pub mod scoring;
 
 use std::time::Duration;
 
