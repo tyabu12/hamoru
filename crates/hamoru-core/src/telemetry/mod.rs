@@ -68,5 +68,5 @@ pub struct Metrics {
 
 /// Cached metrics snapshot for fast Policy Engine lookups.
 // TODO: Expand with per-model and per-provider breakdowns in Phase 2.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct MetricsCache;

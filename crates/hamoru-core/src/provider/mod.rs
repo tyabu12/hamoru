@@ -6,6 +6,7 @@
 
 pub mod anthropic;
 pub mod catalog;
+pub mod factory;
 pub mod http;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod mock;

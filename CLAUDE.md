@@ -33,11 +33,13 @@ hamoru is an orchestration infrastructure tool aiming to be "Terraform for LLMs.
 | Async traits | `async-trait` | dyn-safe async trait methods (`LlmProvider`, etc.) |
 | Streaming | `futures-core`, `futures` | `Stream` trait + stream combinators |
 | Stream utilities | `tokio-stream` | Stream adapters for provider response parsing |
+| Byte buffers | `bytes` | Streaming byte buffer handling in SSE/NDJSON parsing |
 | HTTP client | `reqwest` | Provider adapter HTTP communication (features: `rustls-tls`, `stream`, `json`) |
 | HTTP server | `axum` | OpenAI-compatible REST API |
 | Serialization | `serde`, `serde_yaml`, `serde_json` | Config files, API communication |
 | CLI | `clap` | Subcommands, argument parsing |
 | Logging | `tracing` | Structured logs, OpenTelemetry-compatible |
+| Logging subscriber | `tracing-subscriber` | Log formatting and env-filter (CLI layer only) |
 | Error handling | `thiserror` | Unified `HamoruError` type |
 | Timestamps | `chrono` | ISO 8601 timestamps in telemetry `HistoryEntry` |
 | Randomness | `rand` | Jitter in `RetryProvider` exponential backoff |
@@ -115,8 +117,9 @@ Prefix the subject line with a single emoji that captures the spirit of the chan
 | 000 | Why hamoru — Competitive analysis and differentiation | design-plan.md Section 1.1 |
 | 001 | Architecture Overview | design-plan.md Section 3 |
 | 002 | Tool Execution boundary — internal-only tools, external deferred to MCP | design-plan.md Phase 0 |
+| 003 | Provider Abstraction Design — retry-as-decorator, custom SSE/NDJSON, factory DI | design-plan.md Phase 1 |
 
-Next available number: **003**. Increment sequentially from here.
+Next available number: **004**. Increment sequentially from here.
 
 ## Agent Configuration
 

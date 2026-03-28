@@ -1151,16 +1151,16 @@ hamoru/
 **Goal**: Call Claude API and Ollama through a unified interface + execution history recorded
 
 **Deliverables:**
-- [ ] `LlmProvider` trait implementation: Claude adapter (reqwest + SSE)
-- [ ] `LlmProvider` trait implementation: Ollama adapter (reqwest)
-- [ ] Streaming support
+- [x] `LlmProvider` trait implementation: Claude adapter (reqwest + SSE)
+- [x] `LlmProvider` trait implementation: Ollama adapter (reqwest)
+- [x] Streaming support
 - [x] Retry, backoff, timeout
 - [x] `ModelInfo` retrieval (hardcoded + config override)
 - [x] InMemory + JSON file basic TelemetryStore
-- [ ] Per-request execution history recording (model, tokens, cost, latency)
+- [x] Per-request execution history recording (model, tokens, cost, latency)
 - [x] Provider tests (mock + integration)
-- [ ] `hamoru providers list` / `hamoru providers test` CLI
-- [ ] `hamoru run -m <provider:model>` CLI
+- [x] `hamoru providers list` / `hamoru providers test` CLI
+- [x] `hamoru run -m <provider:model>` CLI
 
 **Completion criteria:**
 ```bash

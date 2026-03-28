@@ -1,6 +1,20 @@
 //! hamoru CLI — LLM Orchestration Infrastructure as Code.
 
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::time::Instant;
+
+use chrono::Utc;
 use clap::{Parser, Subcommand};
+use futures::StreamExt;
+use hamoru_core::config::{self, HamoruConfig, ProviderType};
+use hamoru_core::error::HamoruError;
+use hamoru_core::provider::ProviderRegistry;
+use hamoru_core::provider::factory::build_registry;
+use hamoru_core::provider::types::*;
+use hamoru_core::telemetry::json_file::JsonFileTelemetryStore;
+use hamoru_core::telemetry::{HistoryEntry, TelemetryStore};
+use tracing_subscriber::EnvFilter;
 
 /// hamoru: Terraform for LLMs.
 ///
@@ -68,6 +82,10 @@ struct RunArgs {
     #[arg(short, long, value_delimiter = ',')]
     tags: Vec<String>,
 
+    /// Disable streaming (print full response at once).
+    #[arg(long, default_value_t = false)]
+    no_stream: bool,
+
     /// The prompt or task description.
     prompt: String,
 }
@@ -85,9 +103,9 @@ struct ServeArgs {
 
 #[derive(Subcommand)]
 enum ProvidersCommands {
-    /// List all configured providers.
+    /// List all configured providers and their models.
     List,
-    /// Test connectivity to all providers.
+    /// Test connectivity to all configured providers.
     Test,
 }
 
@@ -121,27 +139,355 @@ enum TelemetryCommands {
 
 #[tokio::main]
 async fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .init();
+
     let cli = Cli::parse();
 
-    match cli.command {
-        Commands::Init => eprintln!("Not yet implemented: init"),
-        Commands::Plan => eprintln!("Not yet implemented: plan"),
-        Commands::Status => eprintln!("Not yet implemented: status"),
-        Commands::Run(_args) => eprintln!("Not yet implemented: run"),
-        Commands::Serve(_args) => eprintln!("Not yet implemented: serve"),
+    let result = match cli.command {
+        Commands::Init => init_project().await,
+        Commands::Plan => {
+            eprintln!("Not yet implemented: plan");
+            Ok(())
+        }
+        Commands::Status => {
+            eprintln!("Not yet implemented: status");
+            Ok(())
+        }
+        Commands::Run(args) => run_prompt(args).await,
+        Commands::Serve(_args) => {
+            eprintln!("Not yet implemented: serve");
+            Ok(())
+        }
         Commands::Providers(cmd) => match cmd {
-            ProvidersCommands::List => eprintln!("Not yet implemented: providers list"),
-            ProvidersCommands::Test => eprintln!("Not yet implemented: providers test"),
+            ProvidersCommands::List => providers_list().await,
+            ProvidersCommands::Test => providers_test().await,
         },
         Commands::Agents(cmd) => match cmd {
-            AgentsCommands::List => eprintln!("Not yet implemented: agents list"),
-            AgentsCommands::Test { .. } => eprintln!("Not yet implemented: agents test"),
+            AgentsCommands::List => {
+                eprintln!("Not yet implemented: agents list");
+                Ok(())
+            }
+            AgentsCommands::Test { .. } => {
+                eprintln!("Not yet implemented: agents test");
+                Ok(())
+            }
         },
-        Commands::Metrics(_args) => eprintln!("Not yet implemented: metrics"),
+        Commands::Metrics(_args) => {
+            eprintln!("Not yet implemented: metrics");
+            Ok(())
+        }
         Commands::Telemetry(cmd) => match cmd {
-            TelemetryCommands::Show => eprintln!("Not yet implemented: telemetry show"),
-            TelemetryCommands::Pull => eprintln!("Not yet implemented: telemetry pull"),
-            TelemetryCommands::Push => eprintln!("Not yet implemented: telemetry push"),
+            TelemetryCommands::Show => {
+                eprintln!("Not yet implemented: telemetry show");
+                Ok(())
+            }
+            TelemetryCommands::Pull => {
+                eprintln!("Not yet implemented: telemetry pull");
+                Ok(())
+            }
+            TelemetryCommands::Push => {
+                eprintln!("Not yet implemented: telemetry push");
+                Ok(())
+            }
         },
+    };
+
+    if let Err(e) = result {
+        eprintln!("Error: {}", format_cli_error(&e));
+        std::process::exit(1);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Config helpers
+// ---------------------------------------------------------------------------
+
+/// Finds the hamoru config file, checking common locations.
+fn find_config_path() -> Result<PathBuf, HamoruError> {
+    for path in ["hamoru.yaml", ".hamoru/hamoru.yaml"] {
+        let p = PathBuf::from(path);
+        if p.exists() {
+            return Ok(p);
+        }
+    }
+    Err(HamoruError::ConfigError {
+        reason: "No hamoru.yaml found. Run 'hamoru init' to create one.".to_string(),
+    })
+}
+
+/// Loads config and builds a provider registry.
+fn load_and_build() -> Result<(HamoruConfig, ProviderRegistry), HamoruError> {
+    let path = find_config_path()?;
+    let config = config::load_config(&path)?;
+    let registry = build_registry(&config)?;
+    Ok((config, registry))
+}
+
+/// Appends a CLI-layer remediation hint to an error message.
+fn format_cli_error(e: &HamoruError) -> String {
+    match e {
+        HamoruError::CredentialNotFound { provider } => {
+            let hint = match provider.as_str() {
+                "anthropic" => {
+                    "\n\nHint: Set HAMORU_ANTHROPIC_API_KEY environment variable.\n      Get your key at https://console.anthropic.com/"
+                }
+                _ => "",
+            };
+            format!("{e}{hint}")
+        }
+        HamoruError::ConfigError { .. } => {
+            format!("{e}\n\nHint: Run 'hamoru init' to create a configuration file.")
+        }
+        _ => e.to_string(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// providers list / test
+// ---------------------------------------------------------------------------
+
+async fn providers_list() -> Result<(), HamoruError> {
+    let (_config, registry) = load_and_build()?;
+
+    for provider in registry.iter() {
+        let models = provider.list_models().await?;
+        println!("Provider: {}", provider.id());
+        if models.is_empty() {
+            println!("  (no models)");
+        }
+        for model in &models {
+            let caps: Vec<&str> = model
+                .capabilities
+                .iter()
+                .map(|c| match c {
+                    Capability::Chat => "chat",
+                    Capability::Vision => "vision",
+                    Capability::FunctionCalling => "function_calling",
+                    Capability::Reasoning => "reasoning",
+                    Capability::PromptCaching => "prompt_caching",
+                })
+                .collect();
+            println!(
+                "  {} (context: {}k, in: ${:.6}/tok, out: ${:.6}/tok) [{}]",
+                model.id,
+                model.context_window / 1000,
+                model.cost_per_input_token,
+                model.cost_per_output_token,
+                caps.join(", ")
+            );
+        }
+        println!();
+    }
+    Ok(())
+}
+
+async fn providers_test() -> Result<(), HamoruError> {
+    let (config, registry) = load_and_build()?;
+
+    for pc in &config.providers {
+        let provider = match registry.get(&pc.name) {
+            Some(p) => p,
+            None => {
+                println!("  \u{2717} {}: not found in registry", pc.name);
+                continue;
+            }
+        };
+
+        let start = Instant::now();
+        let result = match pc.provider_type {
+            ProviderType::Ollama => provider.list_models().await.map(|_| ()),
+            ProviderType::Anthropic => {
+                // Lightweight check: send minimal request
+                let models = provider.list_models().await?;
+                let model = models.first().map(|m| m.id.clone()).unwrap_or_default();
+                provider
+                    .chat(ChatRequest {
+                        model,
+                        messages: vec![Message {
+                            role: Role::User,
+                            content: MessageContent::Text("Hi".to_string()),
+                        }],
+                        temperature: None,
+                        max_tokens: Some(1),
+                        tools: None,
+                        stream: false,
+                    })
+                    .await
+                    .map(|_| ())
+            }
+        };
+        let elapsed = start.elapsed().as_millis();
+
+        match result {
+            Ok(()) => println!("  \u{2713} {}: healthy ({elapsed}ms)", pc.name),
+            Err(e) => println!("  \u{2717} {}: {}", pc.name, format_cli_error(&e)),
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// run
+// ---------------------------------------------------------------------------
+
+async fn run_prompt(args: RunArgs) -> Result<(), HamoruError> {
+    let (provider_id, model) = parse_model_spec(args.model.as_deref())?;
+    let (_config, registry) = load_and_build()?;
+    let provider = registry
+        .get(&provider_id)
+        .ok_or_else(|| HamoruError::ConfigError {
+            reason: format!("Provider '{provider_id}' not found in config. Check hamoru.yaml."),
+        })?;
+
+    let request = ChatRequest {
+        model: model.clone(),
+        messages: vec![Message {
+            role: Role::User,
+            content: MessageContent::Text(args.prompt),
+        }],
+        temperature: None,
+        max_tokens: None,
+        tools: None,
+        stream: !args.no_stream,
+    };
+
+    let (usage, latency_ms) = if args.no_stream {
+        let resp = provider.chat(request).await?;
+        println!("{}", resp.content);
+        (resp.usage, resp.latency_ms)
+    } else {
+        let mut stream = provider.chat_stream(request).await?;
+        let mut usage = None;
+        let start = Instant::now();
+        while let Some(chunk_result) = stream.next().await {
+            let chunk = chunk_result?;
+            if !chunk.delta.is_empty() {
+                print!("{}", chunk.delta);
+                // Flush to show streaming output immediately
+                let _ = std::io::stdout().flush();
+            }
+            if chunk.usage.is_some() {
+                usage = chunk.usage;
+            }
+        }
+        println!();
+        let latency = start.elapsed().as_millis() as u64;
+        (usage.unwrap_or_default(), latency)
+    };
+
+    // Ensure .hamoru/ directory exists
+    ensure_hamoru_dir().await?;
+
+    // Telemetry recording
+    let telemetry = JsonFileTelemetryStore::new(".hamoru/state.json").await?;
+    let model_info = provider.model_info(&model).await.ok();
+    let cost = model_info
+        .map(|mi| usage.calculate_cost(&mi))
+        .unwrap_or(0.0);
+    let entry = HistoryEntry {
+        timestamp: Utc::now(),
+        provider: provider_id,
+        model,
+        tokens: usage.clone(),
+        cost,
+        latency_ms,
+        success: true,
+    };
+    telemetry.record(&entry).await?;
+
+    // Stats to stderr
+    eprintln!(
+        "\n---\nTokens: {} in / {} out | Cost: ${:.6} | Latency: {}ms",
+        usage.input_tokens, usage.output_tokens, cost, latency_ms
+    );
+    Ok(())
+}
+
+fn parse_model_spec(spec: Option<&str>) -> Result<(String, String), HamoruError> {
+    let spec = spec.ok_or_else(|| HamoruError::ConfigError {
+        reason: "Missing -m flag. Usage: hamoru run -m provider:model 'prompt'".to_string(),
+    })?;
+    let (provider, model) = spec.split_once(':').ok_or_else(|| HamoruError::ConfigError {
+        reason: format!(
+            "Invalid model spec '{spec}'. Format: provider:model (e.g., claude:claude-sonnet-4-6)"
+        ),
+    })?;
+    if provider.is_empty() || model.is_empty() {
+        return Err(HamoruError::ConfigError {
+            reason: format!(
+                "Invalid model spec '{spec}'. Both provider and model must be non-empty."
+            ),
+        });
+    }
+    Ok((provider.to_string(), model.to_string()))
+}
+
+// ---------------------------------------------------------------------------
+// init
+// ---------------------------------------------------------------------------
+
+/// Default hamoru.yaml template.
+const INIT_TEMPLATE: &str = r#"version: "1"
+
+providers:
+  - name: claude
+    type: anthropic
+    models:
+      - claude-sonnet-4-6
+      - claude-haiku-4-5
+
+  # Uncomment to add Ollama (local models):
+  # - name: local
+  #   type: ollama
+  #   endpoint: http://localhost:11434
+"#;
+
+async fn init_project() -> Result<(), HamoruError> {
+    let config_path = Path::new(".hamoru/hamoru.yaml");
+    if config_path.exists() {
+        eprintln!("Configuration already exists at .hamoru/hamoru.yaml. Skipping.");
+        return Ok(());
+    }
+
+    ensure_hamoru_dir().await?;
+    tokio::fs::write(config_path, INIT_TEMPLATE)
+        .await
+        .map_err(|e| HamoruError::ConfigError {
+            reason: format!("Failed to write config file: {e}"),
+        })?;
+
+    // Set file permissions on unix (mode 600 for config)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ =
+            tokio::fs::set_permissions(config_path, std::fs::Permissions::from_mode(0o600)).await;
+    }
+
+    println!("Created .hamoru/hamoru.yaml\n");
+    println!("Next steps:");
+    println!("  1. Set your API key: export HAMORU_ANTHROPIC_API_KEY=sk-...");
+    println!("  2. Test connectivity: hamoru providers test");
+    println!("  3. Run a prompt: hamoru run -m claude:claude-sonnet-4-6 'Hello'");
+    Ok(())
+}
+
+/// Ensures the .hamoru/ directory exists with appropriate permissions.
+async fn ensure_hamoru_dir() -> Result<(), HamoruError> {
+    tokio::fs::create_dir_all(".hamoru")
+        .await
+        .map_err(|e| HamoruError::ConfigError {
+            reason: format!("Failed to create .hamoru/ directory: {e}"),
+        })?;
+
+    // Set directory permissions on unix (mode 700)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = tokio::fs::set_permissions(".hamoru", std::fs::Permissions::from_mode(0o700)).await;
+    }
+
+    Ok(())
 }
