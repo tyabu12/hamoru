@@ -50,8 +50,7 @@ impl PolicyConfig {
             }
         }
 
-        let policy_names: HashSet<&str> =
-            self.policies.iter().map(|p| p.name.as_str()).collect();
+        let policy_names: HashSet<&str> = self.policies.iter().map(|p| p.name.as_str()).collect();
         let mut default_count = 0;
 
         for (i, rule) in self.routing_rules.iter().enumerate() {
@@ -69,15 +68,16 @@ impl PolicyConfig {
 
             if has_match {
                 // Match rules must have a top-level `policy` field
-                let policy_name = rule.policy.as_deref().ok_or_else(|| {
-                    HamoruError::ConfigError {
-                        reason: format!(
-                            "Routing rule {} has 'match' but no 'policy' field. \
+                let policy_name =
+                    rule.policy
+                        .as_deref()
+                        .ok_or_else(|| HamoruError::ConfigError {
+                            reason: format!(
+                                "Routing rule {} has 'match' but no 'policy' field. \
                              Add policy: <name> alongside the match.",
-                            i + 1
-                        ),
-                    }
-                })?;
+                                i + 1
+                            ),
+                        })?;
                 if !policy_names.contains(policy_name) {
                     return Err(HamoruError::ConfigError {
                         reason: format!(
@@ -95,8 +95,7 @@ impl PolicyConfig {
                 default_count += 1;
                 if default_count > 1 {
                     return Err(HamoruError::ConfigError {
-                        reason:
-                            "At most one default routing rule is allowed.".to_string(),
+                        reason: "At most one default routing rule is allowed.".to_string(),
                     });
                 }
                 // Validate the default rule's policy reference
@@ -252,15 +251,14 @@ pub fn parse_policy_config(yaml: &str) -> Result<PolicyConfig> {
 
 /// Loads and validates a `PolicyConfig` from a YAML file.
 pub fn load_policy_config(path: &Path) -> Result<PolicyConfig> {
-    let content =
-        std::fs::read_to_string(path).map_err(|e| HamoruError::ConfigError {
-            reason: format!(
-                "Failed to read policy config '{}': {}. \
+    let content = std::fs::read_to_string(path).map_err(|e| HamoruError::ConfigError {
+        reason: format!(
+            "Failed to read policy config '{}': {}. \
                  Run 'hamoru init' to create one.",
-                path.display(),
-                e
-            ),
-        })?;
+            path.display(),
+            e
+        ),
+    })?;
     parse_policy_config(&content)
 }
 
@@ -320,7 +318,12 @@ policies:
         assert!(config.routing_rules.is_empty());
         assert!(config.cost_limits.is_none());
         assert!(config.policies[0].description.is_none());
-        assert!(config.policies[0].constraints.max_cost_per_request.is_none());
+        assert!(
+            config.policies[0]
+                .constraints
+                .max_cost_per_request
+                .is_none()
+        );
     }
 
     #[test]
@@ -483,9 +486,8 @@ policies:
             ("latency", Priority::Latency),
             ("balanced", Priority::Balanced),
         ] {
-            let yaml = format!(
-                "policies:\n  - name: p\n    preferences:\n      priority: {yaml_val}\n"
-            );
+            let yaml =
+                format!("policies:\n  - name: p\n    preferences:\n      priority: {yaml_val}\n");
             let config = parse_policy_config(&yaml).unwrap();
             assert_eq!(config.policies[0].preferences.priority, expected);
         }

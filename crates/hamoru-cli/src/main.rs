@@ -353,8 +353,7 @@ async fn run_prompt(args: RunArgs) -> Result<(), HamoruError> {
     } else if args.policy.is_some() || !args.tags.is_empty() {
         // Policy mode
         let policy_path = find_policy_config_path()?;
-        let policy_config =
-            hamoru_core::policy::config::load_policy_config(&policy_path)?;
+        let policy_config = hamoru_core::policy::config::load_policy_config(&policy_path)?;
 
         // Pre-fetch models from all providers
         let mut all_models = Vec::new();
@@ -362,7 +361,10 @@ async fn run_prompt(args: RunArgs) -> Result<(), HamoruError> {
             match provider.list_models().await {
                 Ok(models) => all_models.extend(models),
                 Err(e) => {
-                    tracing::warn!(provider = provider.id(), "Failed to list models, skipping: {e}");
+                    tracing::warn!(
+                        provider = provider.id(),
+                        "Failed to list models, skipping: {e}"
+                    );
                 }
             }
         }
@@ -380,12 +382,13 @@ async fn run_prompt(args: RunArgs) -> Result<(), HamoruError> {
         let period = Duration::from_secs(7 * 24 * 3600);
         let metrics = store.query_detailed_metrics(period).await?;
 
-        let engine =
-            hamoru_core::policy::DefaultPolicyEngine::new(policy_config);
-        let selection =
-            hamoru_core::policy::PolicyEngine::select_model(
-                &engine, &request, &all_models, &metrics,
-            )?;
+        let engine = hamoru_core::policy::DefaultPolicyEngine::new(policy_config);
+        let selection = hamoru_core::policy::PolicyEngine::select_model(
+            &engine,
+            &request,
+            &all_models,
+            &metrics,
+        )?;
 
         eprintln!(
             "Selected: {}:{} (reason: {}, est. ${:.4})",
@@ -790,11 +793,8 @@ async fn init_project() -> Result<(), HamoruError> {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = tokio::fs::set_permissions(
-                policy_path,
-                std::fs::Permissions::from_mode(0o600),
-            )
-            .await;
+            let _ = tokio::fs::set_permissions(policy_path, std::fs::Permissions::from_mode(0o600))
+                .await;
         }
 
         println!("Created .hamoru/hamoru.policy.yaml");

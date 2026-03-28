@@ -85,10 +85,7 @@ pub fn score_by_quality(models: &[ModelInfo]) -> Vec<f64> {
         .collect();
 
     // Primary: tier ordinal; tiebreak: cost within tier (higher cost = better)
-    let costs: Vec<f64> = models
-        .iter()
-        .map(|m| m.cost_per_output_token)
-        .collect();
+    let costs: Vec<f64> = models.iter().map(|m| m.cost_per_output_token).collect();
 
     // Composite score: tier * 1000 + cost (tier dominates)
     let composites: Vec<f64> = ordinals
@@ -111,12 +108,7 @@ pub fn score_by_latency(models: &[ModelInfo], metrics: &MetricsCache) -> Vec<f64
 
     let latencies: Vec<Option<f64>> = models
         .iter()
-        .map(|m| {
-            metrics
-                .by_model
-                .get(&m.id)
-                .map(|mm| mm.avg_latency_ms)
-        })
+        .map(|m| metrics.by_model.get(&m.id).map(|mm| mm.avg_latency_ms))
         .collect();
 
     // If all models have known latency
@@ -135,7 +127,13 @@ pub fn score_by_latency(models: &[ModelInfo], metrics: &MetricsCache) -> Vec<f64
         // All known latencies equal
         return latencies
             .iter()
-            .map(|l| if l.is_some() { 1.0 } else { MISSING_LATENCY_DEFAULT_SCORE })
+            .map(|l| {
+                if l.is_some() {
+                    1.0
+                } else {
+                    MISSING_LATENCY_DEFAULT_SCORE
+                }
+            })
             .collect();
     }
 
@@ -221,7 +219,12 @@ mod tests {
         assert_eq!(quality_tier(&m), QualityTier::High);
 
         // Just below High threshold
-        let m = model_with_cost("below-high", "test", 0.0, HIGH_TIER_THRESHOLD - f64::EPSILON);
+        let m = model_with_cost(
+            "below-high",
+            "test",
+            0.0,
+            HIGH_TIER_THRESHOLD - f64::EPSILON,
+        );
         assert_eq!(quality_tier(&m), QualityTier::Medium);
 
         // Exactly at Medium threshold
@@ -229,7 +232,12 @@ mod tests {
         assert_eq!(quality_tier(&m), QualityTier::Medium);
 
         // Just below Medium threshold
-        let m = model_with_cost("below-med", "test", 0.0, MEDIUM_TIER_THRESHOLD - f64::EPSILON);
+        let m = model_with_cost(
+            "below-med",
+            "test",
+            0.0,
+            MEDIUM_TIER_THRESHOLD - f64::EPSILON,
+        );
         assert_eq!(quality_tier(&m), QualityTier::Low);
     }
 
@@ -322,10 +330,8 @@ mod tests {
     #[test]
     fn score_by_latency_all_zero() {
         let models = vec![model_sonnet(), model_haiku()];
-        let metrics = metrics_cache_with_latency(&[
-            ("claude-sonnet-4-6", 0.0),
-            ("claude-haiku-4-5", 0.0),
-        ]);
+        let metrics =
+            metrics_cache_with_latency(&[("claude-sonnet-4-6", 0.0), ("claude-haiku-4-5", 0.0)]);
         let scores = score_by_latency(&models, &metrics);
         for s in &scores {
             assert!((s - 1.0).abs() < f64::EPSILON);
@@ -337,10 +343,8 @@ mod tests {
     #[test]
     fn score_balanced_combines_weights() {
         let models = vec![model_sonnet(), model_llama_70b()];
-        let metrics = metrics_cache_with_latency(&[
-            ("claude-sonnet-4-6", 2000.0),
-            ("llama3.3:70b", 100.0),
-        ]);
+        let metrics =
+            metrics_cache_with_latency(&[("claude-sonnet-4-6", 2000.0), ("llama3.3:70b", 100.0)]);
         let scores = score_balanced(&models, &metrics);
         // Both should have scores between 0 and 1
         assert!(scores[0] > 0.0 && scores[0] < 1.0);

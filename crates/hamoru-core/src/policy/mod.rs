@@ -214,12 +214,7 @@ pub(crate) mod test_fixtures {
     }
 
     /// Creates a `ModelInfo` with custom cost values.
-    pub(crate) fn model_with_cost(
-        id: &str,
-        provider: &str,
-        input: f64,
-        output: f64,
-    ) -> ModelInfo {
+    pub(crate) fn model_with_cost(id: &str, provider: &str, input: f64, output: f64) -> ModelInfo {
         ModelInfo {
             id: id.to_string(),
             provider: provider.to_string(),
@@ -232,24 +227,6 @@ pub(crate) mod test_fixtures {
         }
     }
 
-    /// Creates a `ModelInfo` with specified capabilities.
-    pub(crate) fn model_with_capabilities(
-        id: &str,
-        provider: &str,
-        caps: Vec<Capability>,
-    ) -> ModelInfo {
-        ModelInfo {
-            id: id.to_string(),
-            provider: provider.to_string(),
-            context_window: 128_000,
-            cost_per_input_token: 1.0 / 1_000_000.0,
-            cost_per_output_token: 5.0 / 1_000_000.0,
-            cost_per_cached_input_token: None,
-            capabilities: caps,
-            max_output_tokens: None,
-        }
-    }
-
     /// Returns an empty `MetricsCache` (zero data).
     pub(crate) fn empty_metrics_cache() -> MetricsCache {
         MetricsCache::default()
@@ -258,9 +235,7 @@ pub(crate) mod test_fixtures {
     /// Builds a `MetricsCache` with per-model latency entries.
     ///
     /// Each entry is `(model_id, avg_latency_ms)`.
-    pub(crate) fn metrics_cache_with_latency(
-        entries: &[(&str, f64)],
-    ) -> MetricsCache {
+    pub(crate) fn metrics_cache_with_latency(entries: &[(&str, f64)]) -> MetricsCache {
         let mut by_model = HashMap::new();
         for &(model_id, latency) in entries {
             by_model.insert(

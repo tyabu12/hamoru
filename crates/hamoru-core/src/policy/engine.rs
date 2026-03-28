@@ -9,7 +9,9 @@ use crate::provider::ModelInfo;
 use crate::telemetry::MetricsCache;
 
 use super::config::PolicyConfig;
-use super::scoring::{quality_tier, score_balanced, score_by_cost, score_by_latency, score_by_quality};
+use super::scoring::{
+    quality_tier, score_balanced, score_by_cost, score_by_latency, score_by_quality,
+};
 use super::{
     CostCheckResult, CostImpactReport, ModelSelection, ModelShift, PolicyEngine, Priority,
     RoutingRequest,
@@ -93,11 +95,7 @@ impl DefaultPolicyEngine {
     ///
     /// Returns the default policy name (first policy or default rule).
     /// This is a simplified simulation — real routing depends on tags.
-    fn simulate_routing_for_model(
-        &self,
-        _model_id: &str,
-        config: &PolicyConfig,
-    ) -> Option<String> {
+    fn simulate_routing_for_model(&self, _model_id: &str, config: &PolicyConfig) -> Option<String> {
         // Check default routing rule first
         for rule in &config.routing_rules {
             if let Some(ref default) = rule.default {
@@ -154,7 +152,7 @@ impl PolicyEngine for DefaultPolicyEngine {
                 metrics_cache
                     .by_model
                     .get(&m.id)
-                    .map_or(true, |mm| mm.avg_latency_ms <= max_latency as f64)
+                    .is_none_or(|mm| mm.avg_latency_ms <= max_latency as f64)
             });
         }
 
@@ -263,16 +261,16 @@ impl PolicyEngine for DefaultPolicyEngine {
         let alert_threshold = limits.alert_threshold.unwrap_or(0.8);
 
         // Check per_request limit
-        if let Some(max) = limits.max_cost_per_request {
-            if estimated_cost > max {
-                return Ok(CostCheckResult {
-                    allowed: false,
-                    limit_exceeded: Some("per_request".to_string()),
-                    current_spend: estimated_cost,
-                    max_allowed: max,
-                    ..Default::default()
-                });
-            }
+        if let Some(max) = limits.max_cost_per_request
+            && estimated_cost > max
+        {
+            return Ok(CostCheckResult {
+                allowed: false,
+                limit_exceeded: Some("per_request".to_string()),
+                current_spend: estimated_cost,
+                max_allowed: max,
+                ..Default::default()
+            });
         }
 
         // Check per_day limit using MetricsCache
@@ -307,29 +305,29 @@ impl PolicyEngine for DefaultPolicyEngine {
         }
 
         // Check per_workflow limit
-        if let Some(max) = limits.max_cost_per_workflow {
-            if estimated_cost > max {
-                return Ok(CostCheckResult {
-                    allowed: false,
-                    limit_exceeded: Some("per_workflow".to_string()),
-                    current_spend: estimated_cost,
-                    max_allowed: max,
-                    ..Default::default()
-                });
-            }
+        if let Some(max) = limits.max_cost_per_workflow
+            && estimated_cost > max
+        {
+            return Ok(CostCheckResult {
+                allowed: false,
+                limit_exceeded: Some("per_workflow".to_string()),
+                current_spend: estimated_cost,
+                max_allowed: max,
+                ..Default::default()
+            });
         }
 
         // Check per_collaboration limit
-        if let Some(max) = limits.max_cost_per_collaboration {
-            if estimated_cost > max {
-                return Ok(CostCheckResult {
-                    allowed: false,
-                    limit_exceeded: Some("per_collaboration".to_string()),
-                    current_spend: estimated_cost,
-                    max_allowed: max,
-                    ..Default::default()
-                });
-            }
+        if let Some(max) = limits.max_cost_per_collaboration
+            && estimated_cost > max
+        {
+            return Ok(CostCheckResult {
+                allowed: false,
+                limit_exceeded: Some("per_collaboration".to_string()),
+                current_spend: estimated_cost,
+                max_allowed: max,
+                ..Default::default()
+            });
         }
 
         Ok(CostCheckResult {
@@ -362,14 +360,8 @@ impl PolicyEngine for DefaultPolicyEngine {
             }
 
             // Determine which policy would route to this model under each config
-            let current_policy = self.simulate_routing_for_model(
-                model_id,
-                current_config,
-            );
-            let proposed_policy = self.simulate_routing_for_model(
-                model_id,
-                proposed_config,
-            );
+            let current_policy = self.simulate_routing_for_model(model_id, current_config);
+            let proposed_policy = self.simulate_routing_for_model(model_id, proposed_config);
 
             if current_policy != proposed_policy {
                 // Traffic shifts — estimate cost difference
@@ -872,9 +864,14 @@ mod tests {
         });
         let engine = DefaultPolicyEngine::new(config);
         // Create metrics showing $0.9/day spend over 7 days
-        let mut cache = MetricsCache::default();
-        cache.total.total_cost = 6.3; // 6.3 / 7 = 0.9/day
-        cache.period_days = 7;
+        let cache = MetricsCache {
+            total: Metrics {
+                total_cost: 6.3,
+                ..Default::default()
+            },
+            period_days: 7,
+            ..Default::default()
+        };
 
         let result = engine.check_cost_limits(0.2, &cache).unwrap();
         assert!(!result.allowed);
@@ -904,9 +901,14 @@ mod tests {
         });
         let engine = DefaultPolicyEngine::new(config);
         // Daily spend = 8.5 (85% of 10.0) → alert
-        let mut cache = MetricsCache::default();
-        cache.total.total_cost = 59.5; // 59.5 / 7 = 8.5
-        cache.period_days = 7;
+        let cache = MetricsCache {
+            total: Metrics {
+                total_cost: 59.5,
+                ..Default::default()
+            },
+            period_days: 7,
+            ..Default::default()
+        };
 
         let result = engine.check_cost_limits(0.01, &cache).unwrap();
         assert!(result.allowed);
@@ -921,9 +923,14 @@ mod tests {
             ..Default::default()
         });
         let engine = DefaultPolicyEngine::new(config);
-        let mut cache = MetricsCache::default();
-        cache.total.total_cost = 28.0; // 28 / 7 = 4.0/day
-        cache.period_days = 7;
+        let cache = MetricsCache {
+            total: Metrics {
+                total_cost: 28.0,
+                ..Default::default()
+            },
+            period_days: 7,
+            ..Default::default()
+        };
 
         // 4.0 + 0.5 = 4.5 < 5.0 → allowed
         let result = engine.check_cost_limits(0.5, &cache).unwrap();
@@ -941,9 +948,14 @@ mod tests {
             ..Default::default()
         });
         let engine = DefaultPolicyEngine::new(config);
-        let mut cache = MetricsCache::default();
-        cache.period_days = 0; // No data period
-        cache.total.total_cost = 100.0; // Should not cause division by zero
+        let cache = MetricsCache {
+            total: Metrics {
+                total_cost: 100.0,
+                ..Default::default()
+            },
+            period_days: 0,
+            ..Default::default()
+        };
 
         // daily_spend = 0.0, so 0.0 + 0.5 = 0.5 < 1.0 → allowed
         let result = engine.check_cost_limits(0.5, &cache).unwrap();
@@ -1005,7 +1017,11 @@ mod tests {
         let current = basic_config();
         // Proposed: change default from cost-optimized to quality-first
         let mut proposed = basic_config();
-        if let Some(rule) = proposed.routing_rules.iter_mut().find(|r| r.default.is_some()) {
+        if let Some(rule) = proposed
+            .routing_rules
+            .iter_mut()
+            .find(|r| r.default.is_some())
+        {
             rule.default = Some(DefaultPolicy {
                 policy: "quality-first".to_string(),
             });
@@ -1035,7 +1051,11 @@ mod tests {
         let engine = DefaultPolicyEngine::new(basic_config());
         let current = basic_config();
         let mut proposed = basic_config();
-        if let Some(rule) = proposed.routing_rules.iter_mut().find(|r| r.default.is_some()) {
+        if let Some(rule) = proposed
+            .routing_rules
+            .iter_mut()
+            .find(|r| r.default.is_some())
+        {
             rule.default = Some(DefaultPolicy {
                 policy: "quality-first".to_string(),
             });
@@ -1053,7 +1073,11 @@ mod tests {
         let engine = DefaultPolicyEngine::new(basic_config());
         let current = basic_config();
         let mut proposed = basic_config();
-        if let Some(rule) = proposed.routing_rules.iter_mut().find(|r| r.default.is_some()) {
+        if let Some(rule) = proposed
+            .routing_rules
+            .iter_mut()
+            .find(|r| r.default.is_some())
+        {
             rule.default = Some(DefaultPolicy {
                 policy: "quality-first".to_string(),
             });
@@ -1087,16 +1111,22 @@ mod tests {
         let config = basic_config();
 
         // Low entry count → low confidence
-        let mut cache = MetricsCache::default();
-        cache.entry_count = 10;
-        cache.period_days = 7;
+        let cache = MetricsCache {
+            entry_count: 10,
+            period_days: 7,
+            ..Default::default()
+        };
         let report = engine
             .simulate_cost_impact(&config, &config, &cache)
             .unwrap();
         assert!(report.confidence < 0.2);
 
         // High entry count → higher confidence
-        cache.entry_count = 200;
+        let cache = MetricsCache {
+            entry_count: 200,
+            period_days: 7,
+            ..Default::default()
+        };
         let report = engine
             .simulate_cost_impact(&config, &config, &cache)
             .unwrap();
@@ -1108,18 +1138,23 @@ mod tests {
         let engine = DefaultPolicyEngine::new(basic_config());
         let config = basic_config();
 
-        let mut cache = MetricsCache::default();
-        cache.entry_count = 100;
-
         // 1 day → low confidence
-        cache.period_days = 1;
+        let cache = MetricsCache {
+            entry_count: 100,
+            period_days: 1,
+            ..Default::default()
+        };
         let report = engine
             .simulate_cost_impact(&config, &config, &cache)
             .unwrap();
         let conf_1d = report.confidence;
 
         // 7 days → full confidence
-        cache.period_days = 7;
+        let cache = MetricsCache {
+            entry_count: 100,
+            period_days: 7,
+            ..Default::default()
+        };
         let report = engine
             .simulate_cost_impact(&config, &config, &cache)
             .unwrap();
@@ -1133,15 +1168,17 @@ mod tests {
         let engine = DefaultPolicyEngine::new(basic_config());
         let current = basic_config();
         let mut proposed = basic_config();
-        if let Some(rule) = proposed.routing_rules.iter_mut().find(|r| r.default.is_some()) {
+        if let Some(rule) = proposed
+            .routing_rules
+            .iter_mut()
+            .find(|r| r.default.is_some())
+        {
             rule.default = Some(DefaultPolicy {
                 policy: "quality-first".to_string(),
             });
         }
-        let cache = metrics_with_models(&[
-            ("llama3.3:70b", 100, 1.0),
-            ("claude-haiku-4-5", 50, 2.5),
-        ]);
+        let cache =
+            metrics_with_models(&[("llama3.3:70b", 100, 1.0), ("claude-haiku-4-5", 50, 2.5)]);
         let report = engine
             .simulate_cost_impact(&current, &proposed, &cache)
             .unwrap();
