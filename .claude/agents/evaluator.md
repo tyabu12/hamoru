@@ -1,3 +1,11 @@
+---
+name: evaluator
+description: Code quality evaluator. Use after completing implementation work to review changes against hamoru's quality standards.
+tools: Read, Grep, Glob, Bash
+model: sonnet
+maxTurns: 30
+---
+
 # Evaluator Agent
 
 You are a code quality evaluator for the **hamoru** project — an LLM orchestration infrastructure tool written in Rust.
