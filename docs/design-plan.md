@@ -19,9 +19,9 @@ The LLM orchestration space can be broadly divided into three categories:
 
 | Category | Representative Tools | Approach | Relationship to hamoru |
 |----------|---------------------|----------|----------------------|
-| **LLM Gateways** | LiteLLM, TensorZero, Bifrost, OpenRouter, Portkey | Unified API + Routing + Observability | Closest competitors, especially TensorZero |
+| **LLM Gateways** | LiteLLM, TensorZero, OpenRouter, Portkey | Unified API + Routing + Observability | Closest competitors, especially TensorZero |
 | **Intelligent Routers** | Martian, Not Diamond, RouteLLM | AI-driven prompt analysis → automatic model selection | Complementary. hamoru's Policy Engine uses declarative rules |
-| **Orchestration FWs** | LangGraph, Haystack, MS Agent Framework | Code-based workflow construction | Different approach. hamoru uses declarative definitions |
+| **Orchestration FWs** | LangGraph, Haystack, AutoGen (Microsoft) | Code-based workflow construction | Different approach. hamoru uses declarative definitions |
 
 **Notable Competitor: TensorZero**
 
@@ -38,7 +38,7 @@ While TensorZero focuses on "how to optimize a single inference (POMDP + statist
 The need for "LLM collaboration patterns" is evident in Claude Code's AgentTeams, AWS Bedrock's Evaluator Reflect-Refine pattern, and OpenAI Swarm's Handoff pattern. However, no tool currently exists that can **declaratively define these patterns in configuration files and execute them with integrated policies**.
 
 - TensorZero's episodes are "logical groupings for observation and tracking," not mechanisms for workflow execution control (conditional branching, loops, inter-role collaboration)
-- LangGraph / MS Agent Framework have workflow execution but are Python SDK-based, requiring code. They are not designed for declarative YAML definitions executed via CLI
+- LangGraph / AutoGen (Microsoft) have workflow execution but are code-based (Python/TypeScript SDKs), requiring programming. They are not designed for declarative YAML definitions executed via CLI
 - hamoru declares role-based agent definitions + collaboration patterns (Generator/Evaluator, Pipeline, Debate, etc.) in YAML, with the Policy Engine automatically assigning models to each agent (details: Section 6.4)
 
 **2. Policy as Code — Intent-Based Automatic Model Selection**
@@ -802,7 +802,7 @@ struct HarnessReport {
 
 #### 6.5.5 Differentiation from Existing Orchestration Frameworks
 
-| Feature | hamoru Agent Collaboration | LangGraph | MS Agent Framework | TensorZero |
+| Feature | hamoru Agent Collaboration | LangGraph | AutoGen (Microsoft) | TensorZero |
 |---------|--------------------------|-----------|-------------------|------------|
 | Definition | YAML (declarative) | Python (code) | Python (code) | TOML (function/variant only) |
 | Model selection | Policy Engine auto-selects from tags | Direct in code | Direct in code | variant weight / bandit |
@@ -963,18 +963,18 @@ hamoru telemetry push              # Sync to remote
 **Goal**: Project skeleton and trait definitions for all layers
 
 **Deliverables:**
-- [ ] `cargo init` + workspace setup (start with 2 crates)
-- [ ] Core trait definitions for Layers 1-4 (compiling state)
-- [ ] Layer 5 (Agent Collaboration) traits as **provisional definitions** only (to be redesigned at Phase 6 start. Details: 9.1.3)
-- [ ] Provider skeletons (empty implementations of AnthropicProvider, OllamaProvider)
-- [ ] Unified error type design (including variant enumeration — details: 9.1.1)
-- [ ] Workflow condition evaluation method finalized (details: 9.1.2)
-- [ ] CI setup (GitHub Actions: `cargo test`, `cargo clippy`, `cargo fmt`)
-- [ ] Claude Code tooling setup (CLAUDE.md, evaluator.md, commands/)
-- [ ] README.md / CONTRIBUTING.md
-- [ ] ADR-000: Why hamoru — Competitive analysis and differentiation strategy (this document Section 1.1)
-- [ ] ADR-001: Architecture Overview
-- [ ] ADR-002: Tool Execution boundary — hamoru supports only internal control tools (e.g., `report_status` for state transitions) and considers external tool execution (web search, DB queries, code execution, etc.) out of scope. External tool integration deferred to future MCP integration
+- [x] `cargo init` + workspace setup (start with 2 crates)
+- [x] Core trait definitions for Layers 1-4 (compiling state)
+- [x] Layer 5 (Agent Collaboration) traits as **provisional definitions** only (to be redesigned at Phase 6 start. Details: 9.1.3)
+- [x] Provider skeletons (empty implementations of AnthropicProvider, OllamaProvider)
+- [x] Unified error type design (including variant enumeration — details: 9.1.1)
+- [x] Workflow condition evaluation method finalized (details: 9.1.2)
+- [x] CI setup (GitHub Actions: `cargo test`, `cargo clippy`, `cargo fmt`)
+- [x] Claude Code tooling setup (CLAUDE.md, evaluator.md, commands/)
+- [x] README.md / CONTRIBUTING.md
+- [x] ADR-000: Why hamoru — Competitive analysis and differentiation strategy (this document Section 1.1)
+- [x] ADR-001: Architecture Overview
+- [x] ADR-002: Tool Execution boundary — hamoru supports only internal control tools (e.g., `report_status` for state transitions) and considers external tool execution (web search, DB queries, code execution, etc.) out of scope. External tool integration deferred to future MCP integration
 
 #### 9.1.1 Error Type Design
 

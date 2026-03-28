@@ -4,8 +4,8 @@
 
 ## Current Phase
 
-**Phase 0: Scaffold & Interface Design**
-- See: `docs/design-plan.md` Section 9 (Phase 0)
+**Phase 1: Provider Abstraction + Basic Telemetry**
+- See: `docs/design-plan.md` Section 9 (Phase 1)
 
 > Update this section manually when moving to the next Phase.
 
@@ -67,6 +67,8 @@ hamoru/
 | Component | Crate | Purpose |
 |-----------|-------|---------|
 | Async runtime | `tokio` | Parallel LLM API calls, REST server |
+| Async traits | `async-trait` | dyn-safe async trait methods (`LlmProvider`, etc.) |
+| Streaming | `futures-core` | `Stream` trait for `chat_stream` return type |
 | HTTP client | `reqwest` | Provider adapter HTTP communication |
 | HTTP server | `axum` | OpenAI-compatible REST API |
 | Serialization | `serde`, `serde_yaml`, `serde_json` | Config files, API communication |
@@ -124,6 +126,7 @@ Providers are implemented directly with reqwest + serde. No third-party abstract
 - **Logging levels**: Default (step summary), `--verbose` (policy reasons, tokens), `--debug` (HTTP headers, raw SSE). See design-plan.md Section 11.2.
 - **Failure UX**: Every error message must tell the user what happened AND what to do next. See design-plan.md Section 11.3 for the full scenario table.
 - **YAML schema changes**: No breaking changes to YAML schema fields without bumping `version`. Additive fields are `Option` with defaults. See design-plan.md Section 7.1. Do NOT rename or remove existing YAML fields without user confirmation.
+- **MessageContent enum (deviation from design doc)** — Design doc specifies `Message.content: Vec<ContentPart>`, but implementation uses `MessageContent::Text(String) | MessageContent::Parts(Vec<ContentPart>)` enum to avoid heap-allocating a `Vec` for the 95%+ plain-text case. Approved during Phase 0 planning.
 
 ## Rust Coding Conventions
 

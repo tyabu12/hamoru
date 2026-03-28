@@ -1,6 +1,7 @@
-[package]
-name = "hamoru"
+[workspace]
+members = ["crates/hamoru-core", "crates/hamoru-cli"]
+resolver = "3"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
-
-[dependencies]
