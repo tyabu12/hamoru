@@ -117,7 +117,7 @@ IMPLEMENT_PR_BODY
 )"
 ```
 
-`gh pr create` handles pushing the branch — do NOT run `git push` separately.
+Push the branch first: `git push -u origin <branch>`. Then create the PR.
 
 After creation:
 - Print the PR URL.
