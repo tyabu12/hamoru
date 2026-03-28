@@ -1128,11 +1128,11 @@ hamoru/
 - [ ] `LlmProvider` trait implementation: Claude adapter (reqwest + SSE)
 - [ ] `LlmProvider` trait implementation: Ollama adapter (reqwest)
 - [ ] Streaming support
-- [ ] Retry, backoff, timeout
-- [ ] `ModelInfo` retrieval (hardcoded + config override)
-- [ ] InMemory + JSON file basic TelemetryStore
+- [x] Retry, backoff, timeout
+- [x] `ModelInfo` retrieval (hardcoded + config override)
+- [x] InMemory + JSON file basic TelemetryStore
 - [ ] Per-request execution history recording (model, tokens, cost, latency)
-- [ ] Provider tests (mock + integration)
+- [x] Provider tests (mock + integration)
 - [ ] `hamoru providers list` / `hamoru providers test` CLI
 - [ ] `hamoru run -m <provider:model>` CLI
 

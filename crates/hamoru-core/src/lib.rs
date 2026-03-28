@@ -2,9 +2,10 @@
 //!
 //! Core library providing traits, types, and error definitions for all layers
 //! of the hamoru orchestration engine.
-#![warn(missing_docs)]
+#![deny(missing_docs)]
 
 pub mod agents;
+pub mod config;
 pub mod error;
 pub mod orchestrator;
 pub mod policy;

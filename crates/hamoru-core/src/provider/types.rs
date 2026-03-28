@@ -121,6 +121,19 @@ pub struct TokenUsage {
     pub cache_read_input_tokens: Option<u64>,
 }
 
+impl TokenUsage {
+    /// Calculates the cost in USD based on model pricing.
+    pub fn calculate_cost(&self, model_info: &ModelInfo) -> f64 {
+        let input_cost = self.input_tokens as f64 * model_info.cost_per_input_token;
+        let output_cost = self.output_tokens as f64 * model_info.cost_per_output_token;
+        let cached_cost = self.cache_read_input_tokens.unwrap_or(0) as f64
+            * model_info
+                .cost_per_cached_input_token
+                .unwrap_or(model_info.cost_per_input_token);
+        input_cost + output_cost + cached_cost
+    }
+}
+
 /// A tool definition passed to the LLM.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tool {
@@ -199,4 +212,76 @@ pub struct ChatChunk {
     pub finish_reason: Option<FinishReason>,
     /// Present only on the final chunk (total usage).
     pub usage: Option<TokenUsage>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_model() -> ModelInfo {
+        ModelInfo {
+            id: "test-model".to_string(),
+            provider: "test".to_string(),
+            context_window: 100_000,
+            cost_per_input_token: 3.0 / 1_000_000.0,
+            cost_per_output_token: 15.0 / 1_000_000.0,
+            cost_per_cached_input_token: Some(0.30 / 1_000_000.0),
+            capabilities: vec![Capability::Chat],
+            max_output_tokens: Some(4096),
+        }
+    }
+
+    #[test]
+    fn calculate_cost_basic() {
+        let usage = TokenUsage {
+            input_tokens: 1000,
+            output_tokens: 500,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
+        };
+        let model = sample_model();
+        let cost = usage.calculate_cost(&model);
+        let expected = 1000.0 * 3.0 / 1_000_000.0 + 500.0 * 15.0 / 1_000_000.0;
+        assert!((cost - expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn calculate_cost_with_cached_tokens() {
+        let usage = TokenUsage {
+            input_tokens: 500,
+            output_tokens: 200,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: Some(300),
+        };
+        let model = sample_model();
+        let cost = usage.calculate_cost(&model);
+        let expected =
+            500.0 * 3.0 / 1_000_000.0 + 200.0 * 15.0 / 1_000_000.0 + 300.0 * 0.30 / 1_000_000.0;
+        assert!((cost - expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn calculate_cost_zero_tokens() {
+        let usage = TokenUsage::default();
+        let model = sample_model();
+        let cost = usage.calculate_cost(&model);
+        assert!((cost).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn calculate_cost_no_cached_price_falls_back_to_input() {
+        let usage = TokenUsage {
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: Some(200),
+        };
+        let mut model = sample_model();
+        model.cost_per_cached_input_token = None;
+        let cost = usage.calculate_cost(&model);
+        // cached tokens use input price as fallback
+        let expected =
+            100.0 * 3.0 / 1_000_000.0 + 50.0 * 15.0 / 1_000_000.0 + 200.0 * 3.0 / 1_000_000.0;
+        assert!((cost - expected).abs() < 1e-12);
+    }
 }

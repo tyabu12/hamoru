@@ -164,3 +164,13 @@ pub enum HamoruError {
         provider: String,
     },
 }
+
+impl HamoruError {
+    /// Whether this error is transient and worth retrying.
+    ///
+    /// `ProviderUnavailable` is retryable (covers 429, 500, 502, 503).
+    /// All other errors are terminal — retrying would not help.
+    pub fn is_retryable(&self) -> bool {
+        matches!(self, HamoruError::ProviderUnavailable { .. })
+    }
+}

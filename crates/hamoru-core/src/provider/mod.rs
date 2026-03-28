@@ -5,7 +5,12 @@
 //! appear outside this module.
 
 pub mod anthropic;
+pub mod catalog;
+pub mod http;
+#[cfg(any(test, feature = "test-utils"))]
+pub mod mock;
 pub mod ollama;
+pub mod retry;
 pub mod types;
 
 use std::pin::Pin;
