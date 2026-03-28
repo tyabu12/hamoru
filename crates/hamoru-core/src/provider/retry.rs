@@ -76,7 +76,7 @@ impl RetryProvider {
                 .initial_backoff
                 .saturating_mul(2u32.saturating_pow(attempt));
             let capped_ms = base.min(self.config.max_backoff).as_millis() as u64;
-            let sleep_ms = rand::thread_rng().gen_range(0..=capped_ms);
+            let sleep_ms = rand::rng().random_range(0..=capped_ms);
             tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
 
             match operation().await {
