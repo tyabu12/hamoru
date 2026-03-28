@@ -1222,14 +1222,14 @@ hamoru metrics --period 1d
 **Goal**: Automatic model selection based on policy definitions
 
 **Deliverables:**
-- [ ] Policy YAML parser
-- [ ] `PolicyEngine` trait implementation
-- [ ] Tag-based routing rules
-- [ ] Cost-actuals-based model selection (MetricsCache reference)
-- [ ] Cost guardrails (per_request, per_workflow, per_collaboration, per_day)
-- [ ] `simulate_cost_impact()` — Cost impact prediction for plan
-- [ ] `select_fallback_model()` — Fallback selection on failure
-- [ ] `hamoru run -p <policy>` / `hamoru run --tags` implementation
+- [x] Policy YAML parser
+- [x] `PolicyEngine` trait implementation
+- [x] Tag-based routing rules
+- [x] Cost-actuals-based model selection (MetricsCache reference)
+- [x] Cost guardrails (per_request, per_workflow, per_collaboration, per_day)
+- [x] `simulate_cost_impact()` — Cost impact prediction for plan
+- [x] `select_fallback_model()` — Fallback selection on failure
+- [x] `hamoru run -p <policy>` / `hamoru run --tags` implementation
 
 **Completion criteria:**
 ```bash
