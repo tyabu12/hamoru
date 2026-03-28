@@ -75,7 +75,7 @@ hamoru/
 
 ## Current Phase
 
-**Phase 3: Policy Engine**
+**Phase 4a: Orchestration Engine — Sequential**
 
 See [design-plan.md](docs/design-plan.md) for the full roadmap.
 

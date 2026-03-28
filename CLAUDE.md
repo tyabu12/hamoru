@@ -5,8 +5,8 @@
 
 ## Current Phase
 
-**Phase 3: Policy Engine**
-- See: `docs/design-plan.md` Section 9 (Phase 3)
+**Phase 4a: Orchestration Engine — Sequential**
+- See: `docs/design-plan.md` Section 9 (Phase 4a)
 
 <!-- Update this section manually when moving to the next Phase. -->
 
@@ -120,8 +120,9 @@ Prefix the subject line with a single emoji that captures the spirit of the chan
 | 002 | Tool Execution boundary — internal-only tools, external deferred to MCP | design-plan.md Phase 0 |
 | 003 | Provider Abstraction Design — retry-as-decorator, custom SSE/NDJSON, factory DI | design-plan.md Phase 1 |
 | 004 | Telemetry SQLite Migration — spawn_blocking, MetricsCache design, plan scope | design-plan.md Phase 2 |
+| 005 | Policy Engine Design — sync trait, quality tier heuristic, scoring algorithm | design-plan.md Phase 3 |
 
-Next available number: **005**. Increment sequentially from here.
+Next available number: **006**. Increment sequentially from here.
 
 ## Agent Configuration
 
