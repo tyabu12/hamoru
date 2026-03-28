@@ -1,0 +1,61 @@
+# cargo-deny configuration
+# https://embarkstudios.github.io/cargo-deny/
+#
+# Run locally: cargo deny check licenses bans sources
+# Full check:  cargo deny check
+
+[graph]
+targets = []
+all-features = false
+no-default-features = false
+
+# --- Advisories (RUSTSEC vulnerability database) ---
+# Checked on weekly schedule (security.yml) and as non-blocking in PR CI.
+[advisories]
+# Ignore specific advisories when no fix is available yet.
+# Each entry MUST include a reason comment.
+ignore = []
+
+# --- Licenses ---
+# All transitive dependencies must use a license compatible with MIT.
+# Allowlist derived from `cargo deny list` output (2026-03-28).
+[licenses]
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+]
+confidence-threshold = 0.8
+
+# --- Bans ---
+# Prevent unwanted crates and detect unexpected duplicate versions.
+[bans]
+multiple-versions = "deny"
+wildcards = "allow"
+highlight = "all"
+
+# Ban OpenSSL -- this project uses rustls exclusively (reqwest with rustls-tls).
+deny = [
+    { crate = "openssl-sys", reason = "hamoru uses rustls-tls; openssl is not allowed" },
+]
+
+# Known acceptable duplicates (verified 2026-03-28 via `cargo deny check bans`).
+# ring 0.17 pulls windows-sys 0.52; the rest of the ecosystem uses 0.61.
+skip = [
+    { crate = "windows-sys@0.52.0", reason = "transitive dep of ring 0.17; resolves when ring updates" },
+]
+
+# --- Sources ---
+# All crates must come from crates.io. No git dependencies or unknown registries.
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
