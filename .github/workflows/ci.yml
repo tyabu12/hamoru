@@ -92,7 +92,7 @@ jobs:
     name: PR Report
     needs: check
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 30
     # SECURITY: Do NOT change to pull_request_target. That would run untrusted
     # fork code with elevated permissions and access to repository secrets.
     if: >-
@@ -102,6 +102,33 @@ jobs:
       contents: read
       pull-requests: write
     steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Install cargo-tarpaulin
+        run: cargo install cargo-tarpaulin --version ${{ env.TARPAULIN_VERSION }} --locked
+
+      - name: Run coverage
+        id: cov
+        run: |
+          OUTPUT=$(cargo tarpaulin --workspace --out stdout 2>&1) || TARP_EXIT=$?
+          echo "$OUTPUT"
+          if [ "${TARP_EXIT:-0}" -ne 0 ]; then
+            echo "pct=error" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          PCT=$(echo "$OUTPUT" | grep -oP '^\d+\.\d+% coverage' | head -1 | grep -oP '^\d+\.\d+')
+          PCT=${PCT:-0}
+          if ! [[ "$PCT" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            PCT=0
+          fi
+          echo "pct=$PCT" >> "$GITHUB_OUTPUT"
+
       - name: Fetch baseline coverage from main
         id: baseline
         run: |
@@ -123,6 +150,7 @@ jobs:
           TEST_FAILED: ${{ needs.check.outputs.test-failed }}
           TEST_IGNORED: ${{ needs.check.outputs.test-ignored }}
           TEST_PARSE_ERROR: ${{ needs.check.outputs.test-parse-error }}
+          PR_COV: ${{ steps.cov.outputs.pct }}
           BASELINE_PCT: ${{ steps.baseline.outputs.pct }}
           CI_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
@@ -157,13 +185,29 @@ jobs:
               fi
             fi
 
+            # Coverage with delta
             echo ""
-            echo "### Coverage (main baseline)"
+            echo "### Coverage"
             echo ""
-            if [ "$BASELINE_PCT" = "N/A" ]; then
-              echo "Baseline: N/A (coverage tracking starts after first merge to main)"
+            if [ "$PR_COV" = "error" ]; then
+              echo "> Coverage measurement failed. See [CI logs](${CI_RUN_URL}) for details."
+            elif [ "$BASELINE_PCT" = "N/A" ]; then
+              echo "| This PR | \`main\` | Delta |"
+              echo "|---------|---------|-------|"
+              echo "| **${PR_COV}%** | N/A | — |"
             else
-              echo "**${BASELINE_PCT}%** baseline on \`main\` — delta computed after merge"
+              DELTA=$(echo "scale=2; ${PR_COV} - ${BASELINE_PCT}" | bc | sed 's/^\./0./; s/^-\./-0./')
+              # Format sign and emoji
+              case "$(echo "$DELTA > 0" | bc -l)" in
+                1) SIGN="+"; EMOJI="📈" ;;
+                *) case "$(echo "$DELTA < 0" | bc -l)" in
+                     1) SIGN=""; EMOJI="📉" ;;
+                     *) SIGN=""; EMOJI="➡️" ;;
+                   esac ;;
+              esac
+              echo "| This PR | \`main\` | Delta |"
+              echo "|---------|---------|-------|"
+              echo "| **${PR_COV}%** | ${BASELINE_PCT}% | ${EMOJI} ${SIGN}${DELTA}% |"
             fi
 
             echo ""
