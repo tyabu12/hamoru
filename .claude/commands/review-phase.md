@@ -15,7 +15,7 @@ Perform a completion review for Phase $ARGUMENTS.
    - The file/feature exists
    - It matches the specification in the design doc
    - It compiles and passes clippy
-3. Run the evaluator agent's 11 checkpoints against all code created in this Phase.
+3. Run the evaluator agent's checkpoints (defined in `.claude/agents/evaluator.md`) against all code created in this Phase.
 4. Check for any Phase-specific ADRs that should have been created.
 
 ## Review Loop

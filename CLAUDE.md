@@ -5,8 +5,8 @@
 
 ## Current Phase
 
-**Phase 2: Telemetry + plan**
-- See: `docs/design-plan.md` Section 9 (Phase 2)
+**Phase 3: Policy Engine**
+- See: `docs/design-plan.md` Section 9 (Phase 3)
 
 <!-- Update this section manually when moving to the next Phase. -->
 
@@ -36,7 +36,7 @@ hamoru is an orchestration infrastructure tool aiming to be "Terraform for LLMs.
 | Stream utilities | `tokio-stream` | Stream adapters for provider response parsing |
 | Byte buffers | `bytes` | Streaming byte buffer handling in SSE/NDJSON parsing |
 | HTTP client | `reqwest` | Provider adapter HTTP communication (features: `rustls-tls`, `stream`, `json`) |
-| HTTP server | `axum` | OpenAI-compatible REST API |
+| HTTP server | `axum` | OpenAI-compatible REST API (Phase 5 — not yet in Cargo.toml, requires ADR) |
 | Serialization | `serde`, `serde_yaml`, `serde_json` | Config files, API communication |
 | CLI | `clap` | Subcommands, argument parsing |
 | Logging | `tracing` | Structured logs, OpenTelemetry-compatible |

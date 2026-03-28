@@ -10,7 +10,7 @@ Run hamoru-specific architecture checks on recent changes.
 ## Instructions
 
 1. Identify files changed since the last commit (or all files if on initial commit).
-2. Run the evaluator agent's 11 checkpoints against the changed files.
+2. Run the evaluator agent's checkpoints (defined in `.claude/agents/evaluator.md`) against the changed files.
 
 ## Review Loop
 
