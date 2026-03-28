@@ -1,8 +1,16 @@
-# hamoru
+<div align="center">
 
-> from Japanese ハモる (to harmonize) — "Multiple LLMs, one harmonious interface"
+# 🎶 hamoru
 
-**hamoru** is an orchestration infrastructure tool aiming to be "Terraform for LLMs." It declaratively manages multiple LLM providers, automatically selects optimal models based on cost/quality/latency policies, and executes multi-step workflows. The final form serves as an OpenAI-compatible API.
+**"Terraform for LLMs."**
+
+Declaratively orchestrate multiple LLM providers in harmony,\
+with policy-based model selection and cost impact prediction.
+
+*Named after Japanese ハモる (to harmonize)*\
+*— because your LLMs should sing together, not solo.*
+
+</div>
 
 ## Architecture
 
@@ -20,6 +28,10 @@ API:     OpenAI-Compatible Server    — POST /v1/chat/completions
 1. **Declarative Agent Collaboration** — Define LLM collaboration patterns (Generator/Evaluator, Pipeline, Debate) in YAML
 2. **Policy as Code** — Intent-based model selection: `tags: [review] → quality-first policy → Opus auto-selected`
 3. **Cost Impact Prediction** — `hamoru plan` simulates cost changes before applying policy updates
+
+## Prerequisites
+
+- [Rust](https://rustup.rs/) stable toolchain (`clippy` and `rustfmt` components)
 
 ## Quick Start
 
@@ -53,10 +65,14 @@ hamoru/
 
 ## Current Phase
 
-**Phase 0: Scaffold & Interface Design** — Project skeleton and trait definitions for all layers.
+**Phase 1: Provider Abstraction + Basic Telemetry**
 
 See [design-plan.md](docs/design-plan.md) for the full roadmap.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, coding rules, and testing policy.
+
 ## License
 
-TBD
+[MIT](LICENSE)
