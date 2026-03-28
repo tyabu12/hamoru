@@ -2,7 +2,7 @@
 name: evaluator
 description: Code quality evaluator. Use after completing implementation work to review changes against hamoru's quality standards.
 tools: Read, Grep, Glob, Bash
-model: sonnet
+model: opus
 maxTurns: 30
 ---
 
@@ -51,11 +51,35 @@ Are provider-specific API types leaking outside `provider/`?
 
 ### 6. Rust Quality
 
-- Ownership: unnecessary clones? Could references be used instead?
-- `async`/`Send` boundaries: are trait objects properly bounded?
 - Idiomatic Rust: proper use of `?` operator, iterators, pattern matching.
+- `async`/`Send` boundaries: are trait objects properly bounded?
 
-### 7. Build Verification
+### 7. Performance
+
+- Unnecessary allocations or clones where references would suffice (measurable performance impact, not just style).
+- Inefficient iteration (e.g., collecting then iterating when chaining would work).
+- Redundant API calls or token-wasting patterns in orchestration logic.
+
+### 8. Test Coverage
+
+- Tests cover both happy paths and error cases.
+- Edge cases and boundary conditions are exercised.
+- Phase 0 skeletons are exempt (compile + clippy clean is sufficient).
+
+### 9. Why Comments
+
+- Non-obvious implementation choices have a comment explaining **why**, not just what.
+- Complex logic, workarounds, and deviations from the design doc are annotated.
+- Obvious code is NOT over-commented.
+
+### 10. Runtime Token Efficiency
+
+- Prompt construction does not include redundant context or unnecessary system messages.
+- No unnecessary LLM calls in workflow orchestration (e.g., steps that could be computed locally).
+- Context window usage is mindful — large payloads are summarized or truncated when appropriate.
+- Phase 0-3 (no orchestration logic yet): report N/A unless prompt-building code is present.
+
+### 11. Build Verification
 
 Run these commands and report results:
 ```bash
@@ -77,7 +101,11 @@ cargo fmt --all --check
 | 4. Tests | PASS/WARN/FAIL | ... |
 | 5. Security | PASS/WARN/FAIL | ... |
 | 6. Rust Quality | PASS/WARN/FAIL | ... |
-| 7. Build | PASS/WARN/FAIL | ... |
+| 7. Performance | PASS/WARN/FAIL | ... |
+| 8. Test Coverage | PASS/WARN/FAIL | ... |
+| 9. Why Comments | PASS/WARN/FAIL | ... |
+| 10. Runtime Token Efficiency | PASS/WARN/FAIL | ... |
+| 11. Build | PASS/WARN/FAIL | ... |
 
 ### Issues Found
 (Detail any WARN or FAIL items)

@@ -1,3 +1,8 @@
+---
+description: Run hamoru-specific architecture and quality checks on recent changes. Use after implementation work.
+allowed-tools: Read, Grep, Glob, Bash, Agent
+---
+
 # /hamoru-eval
 
 Run hamoru-specific architecture checks on recent changes.
@@ -5,31 +10,18 @@ Run hamoru-specific architecture checks on recent changes.
 ## Instructions
 
 1. Identify files changed since the last commit (or all files if on initial commit).
-2. Run these hamoru-specific checks:
+2. Run the evaluator agent's 11 checkpoints against the changed files.
 
-### Layer Boundary Check
-- Scan for provider-specific types (`Anthropic*`, `Ollama*`, etc.) imported outside `provider/`.
-- Verify all cross-layer communication uses shared types from `provider/types.rs`.
+## Review Loop
 
-### Provider Isolation Check
-- Ensure each provider file only imports from `provider/types.rs`, `provider/mod.rs`, and external crates.
-- No provider should import from another provider.
+After the evaluator completes:
 
-### Error Handling Check
-- Search for `unwrap()` in non-test code.
-- Verify `HamoruError` variants are used appropriately (not generic catch-all).
-
-### Security Check
-- Search for hardcoded strings that look like API keys or tokens.
-- Verify provider structs with credential fields have manual `Debug` impl.
-- Check that `{previous_output}` is not used in system message contexts.
-
-### Build Check
-```bash
-cargo clippy --all-targets -- -D warnings
-cargo fmt --all --check
-cargo test --all-targets
-```
+1. Launch 2 parallel subagents to cross-review the results (read-only — subagents must not modify any files):
+   - Agent 1: Verify PASS results — are there false negatives? Re-check each PASS item independently.
+   - Agent 2: Verify FAIL results — are there false positives? Confirm each failure is real.
+2. If the cross-review finds new issues, incorporate them and re-run affected checks.
+3. Repeat until no new issues are found. Hard limit: 3 iterations. Stop after 3 even if issues remain and report them as unresolved.
+4. Report the final consolidated results with the iteration count.
 
 ## Output
 
