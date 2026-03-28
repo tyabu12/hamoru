@@ -19,6 +19,26 @@
     ]
   },
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"${CLAUDE_PROJECT_DIR:?}\" && .claude/hooks/block-secrets-edit.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"${CLAUDE_PROJECT_DIR:?}\" && .claude/hooks/block-destructive-git.sh"
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Edit|Write",
@@ -26,6 +46,21 @@
           {
             "type": "command",
             "command": "cd \"${CLAUDE_PROJECT_DIR:?}\" && cargo fmt --all --quiet"
+          },
+          {
+            "type": "command",
+            "command": "cd \"${CLAUDE_PROJECT_DIR:?}\" && cargo clippy --all-targets --quiet -- -D warnings 2>&1 | head -30"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"hookSpecificOutput\":{\"additionalContext\":\"Reminder: This is hamoru (Rust). Follow CLAUDE.md hard rules. No unwrap(), no API keys in code, TDD mandatory.\"}}'"
           }
         ]
       }
