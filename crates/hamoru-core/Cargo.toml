@@ -9,7 +9,7 @@ test-utils = []
 
 [dependencies]
 async-trait = "0.1"
-bytes = "1"
+bytes = "1.11.1"
 chrono = { version = "0.4.20", features = ["serde"] }
 futures = "0.3"
 futures-core = "0.3"
@@ -21,9 +21,9 @@ serde_json = "1"
 serde_yaml = "0.9"
 thiserror = "2"
 tracing = "0.1"
-tokio = { version = "1", features = ["sync", "time", "fs", "rt"] }
+tokio = { version = "1.23.1", features = ["sync", "time", "fs", "rt"] }
 tokio-stream = "0.1"
 
 [dev-dependencies]
 tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "fs", "test-util"] }
+tokio = { version = "1.23.1", features = ["macros", "rt-multi-thread", "sync", "time", "fs", "test-util"] }
