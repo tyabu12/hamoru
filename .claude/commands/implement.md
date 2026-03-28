@@ -68,6 +68,8 @@ Fix any failures before proceeding.
 
 Run the evaluator agent (`.claude/agents/evaluator.md`) against changed files via `Agent` tool.
 
+**If this is a Phase completion** (task was `phase N`): run `/review-phase N` before proceeding to PR. This catches doc updates (CLAUDE.md, README.md, design-plan.md checkboxes, ADR table) and spec fidelity issues.
+
 **Cross-review loop:**
 1. Launch 2 parallel read-only subagents:
    - Agent 1: Verify PASS results — check for false negatives.
@@ -97,7 +99,7 @@ Determine label from the commit prefix (TASK_TYPE or dominant commit type):
 Additionally, if the changes are security-related (dependencies, auth, secrets, hooks, hardening), add the `security` label alongside the prefix-based label.
 
 Present PR draft (title + body + label) for user review:
-- Title: Conventional format, under 70 chars
+- Title: Emoji prefix + Conventional format, under 70 chars (same emoji convention as CLAUDE.md commits)
 - Body: Summary bullets + test plan + `Closes #N` if applicable
 - Label: from the table above
 - Assignee: always `@me`
