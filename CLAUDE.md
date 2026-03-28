@@ -31,13 +31,16 @@ hamoru is an orchestration infrastructure tool aiming to be "Terraform for LLMs.
 |-----------|-------|---------|
 | Async runtime | `tokio` | Parallel LLM API calls, REST server |
 | Async traits | `async-trait` | dyn-safe async trait methods (`LlmProvider`, etc.) |
-| Streaming | `futures-core` | `Stream` trait for `chat_stream` return type |
-| HTTP client | `reqwest` | Provider adapter HTTP communication |
+| Streaming | `futures-core`, `futures` | `Stream` trait + stream combinators |
+| Stream utilities | `tokio-stream` | Stream adapters for provider response parsing |
+| HTTP client | `reqwest` | Provider adapter HTTP communication (features: `rustls-tls`, `stream`, `json`) |
 | HTTP server | `axum` | OpenAI-compatible REST API |
 | Serialization | `serde`, `serde_yaml`, `serde_json` | Config files, API communication |
 | CLI | `clap` | Subcommands, argument parsing |
 | Logging | `tracing` | Structured logs, OpenTelemetry-compatible |
 | Error handling | `thiserror` | Unified `HamoruError` type |
+| Timestamps | `chrono` | ISO 8601 timestamps in telemetry `HistoryEntry` |
+| Randomness | `rand` | Jitter in `RetryProvider` exponential backoff |
 | Local DB | `rusqlite` | Telemetry persistence (Phase 2+) |
 
 Avoid adding dependencies beyond this list without explicit justification and user confirmation. If a new dependency seems needed, discuss it in an ADR first.
