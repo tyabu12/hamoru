@@ -129,7 +129,10 @@ impl PolicyEngine for DefaultPolicyEngine {
             .policies
             .iter()
             .find(|p| p.name == policy_name)
-            .unwrap(); // Safe: resolve_policy_name verified existence
+            .ok_or_else(|| HamoruError::NoModelSatisfiesPolicy {
+                policy: policy_name.clone(),
+                reason: "Policy resolved but not found in config (internal error).".to_string(),
+            })?;
 
         // Filter by capabilities
         let mut candidates: Vec<&ModelInfo> = available_models.iter().collect();
@@ -186,7 +189,10 @@ impl PolicyEngine for DefaultPolicyEngine {
             .enumerate()
             .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
             .map(|(i, _)| i)
-            .unwrap(); // Safe: candidates is non-empty
+            .ok_or_else(|| HamoruError::NoModelSatisfiesPolicy {
+                policy: policy_name.clone(),
+                reason: "Scoring produced no results (internal error).".to_string(),
+            })?;
 
         let best = &candidates[best_idx];
         let estimated_cost = if request.estimated_input_tokens.is_some()

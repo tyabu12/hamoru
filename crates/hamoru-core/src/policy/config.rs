@@ -99,7 +99,17 @@ impl PolicyConfig {
                     });
                 }
                 // Validate the default rule's policy reference
-                let default_policy = &rule.default.as_ref().unwrap().policy;
+                // has_default is true here, so default is guaranteed to be Some
+                let default_policy = &rule
+                    .default
+                    .as_ref()
+                    .ok_or_else(|| HamoruError::ConfigError {
+                        reason: format!(
+                            "Routing rule {} default is missing (internal error).",
+                            i + 1
+                        ),
+                    })?
+                    .policy;
                 if !policy_names.contains(default_policy.as_str()) {
                     return Err(HamoruError::ConfigError {
                         reason: format!(
