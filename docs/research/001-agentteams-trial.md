@@ -5,8 +5,10 @@
 Trial Claude Code's experimental AgentTeams feature during Phase 3 development
 to gather empirical input for Phase 6 (Agent Collaboration Engine) design.
 
-Primary design question: **Is a static DAG compiler sufficient for Layer 5,
-or does it need a runtime coordinator?** (See design-plan.md Section 9.1.3)
+Primary design question: **Should Layer 5 compile collaboration patterns
+entirely into Layer 4 Workflows, or does it need an independent execution
+path?** (See design-plan.md Section 9.1.3, bullet 2; provisional `compile()`
+trait in Section 6.5.4)
 
 ## Setup
 
@@ -15,6 +17,7 @@ or does it need a runtime coordinator?** (See design-plan.md Section 9.1.3)
 - Number of Teammates: 2
 - Task type: <!-- parallel-research / generator-evaluator -->
 - Task description: <!-- fill after trial -->
+- Trial date: <!-- YYYY-MM-DD -->
 - Hook inheritance verified: <!-- yes / no — did Teammates inherit PreToolUse/PostToolUse hooks? -->
 
 ## Quantitative Observations
@@ -42,18 +45,30 @@ or does it need a runtime coordinator?** (See design-plan.md Section 9.1.3)
 - **Rule compliance**: Did Teammates follow CLAUDE.md hard rules without
   explicit enforcement?
 
+- **Error recovery**: How did the Team Lead handle Teammate failures or
+  unsatisfactory output? Did it retry, redirect, or abort?
+  <!-- Maps to HarnessConstraints and QualityGate design (Section 6.5.3) -->
+
+- **Cost awareness**: Did the Team Lead show awareness of token/cost
+  accumulation? Did coordination overhead grow with iterations?
+  <!-- Maps to HarnessConstraints cost_limit design (Section 6.5.3) -->
+
 ## Implications for Phase 6
 
-<!-- Map observations to specific Phase 6 design decisions:
-- Compiler vs runtime coordinator (design-plan.md Section 9.1.3)
-- QualityGate design (generator-evaluator convergence)
-- ContextManagement (keep_last_n vs summarize_on_overflow)
-- DAG-only vs direct agent communication
+<!-- Map observations to the three Phase 6 re-evaluation items (Section 9.1.3):
+1. Delegation method to OrchestrationEngine: trait parameter vs internal field
+2. Internal representation: compile to Layer 4 Workflow vs independent execution path
+3. Relationship between CollaborationResult and ExecutionResult
+
+Additional design areas to address:
+- QualityGate design: convergence mechanism for generator-evaluator (Section 6.5.3)
+- ContextManagement: keep_last_n vs summarize_on_overflow (Section 6.4.1 / 6.5.3)
+- Communication topology: DAG-only vs direct agent messaging
 -->
 
 ## Decision
 
-<!-- continue / read-only only / stop (re-evaluate at GA) -->
+<!-- continue / read-only / stop (re-evaluate at GA) -->
 
 ## Open Questions Remaining
 
