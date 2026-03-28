@@ -75,7 +75,7 @@ hamoru/
 
 ## Current Phase
 
-**Phase 1: Provider Abstraction + Basic Telemetry**
+**Phase 2: Telemetry + plan**
 
 See [design-plan.md](docs/design-plan.md) for the full roadmap.
 

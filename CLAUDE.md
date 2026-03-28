@@ -4,8 +4,8 @@
 
 ## Current Phase
 
-**Phase 1: Provider Abstraction + Basic Telemetry**
-- See: `docs/design-plan.md` Section 9 (Phase 1)
+**Phase 2: Telemetry + plan**
+- See: `docs/design-plan.md` Section 9 (Phase 2)
 
 <!-- Update this section manually when moving to the next Phase. -->
 
@@ -118,8 +118,9 @@ Prefix the subject line with a single emoji that captures the spirit of the chan
 | 001 | Architecture Overview | design-plan.md Section 3 |
 | 002 | Tool Execution boundary — internal-only tools, external deferred to MCP | design-plan.md Phase 0 |
 | 003 | Provider Abstraction Design — retry-as-decorator, custom SSE/NDJSON, factory DI | design-plan.md Phase 1 |
+| 004 | Telemetry SQLite Migration — spawn_blocking, MetricsCache design, plan scope | design-plan.md Phase 2 |
 
-Next available number: **004**. Increment sequentially from here.
+Next available number: **005**. Increment sequentially from here.
 
 ## Agent Configuration
 
