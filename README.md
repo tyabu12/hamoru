@@ -16,22 +16,23 @@ with policy-based model selection and cost impact prediction.
 
 </div>
 
-> **This project is under active development and is not production-ready.**
+> 🚧 **This project is under active development and is not production-ready.** 🚧
+>
 > Use at your own risk. APIs and configuration formats may change without notice.
 
-## Current Phase
+## 🎯 Current Phase
 
 **Phase 4a: Orchestration Engine — Sequential**
 
 See [design-plan.md](docs/design-plan.md) for the full roadmap.
 
-## Key Differentiators
+## ✨ Key Differentiators
 
 1. **Declarative Agent Collaboration** — Define LLM collaboration patterns (Generator/Evaluator, Pipeline, Debate) in YAML
 2. **Policy as Code** — Intent-based model selection: `tags: [review] → quality-first policy → Opus auto-selected`
 3. **Cost Impact Prediction** — `hamoru plan` simulates cost changes before applying policy updates
 
-## Architecture
+## 🏗️ Architecture
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -63,11 +64,11 @@ See [design-plan.md](docs/design-plan.md) for the full roadmap.
 └──────────────────────────────────────────────────────────┘
 ```
 
-## Prerequisites
+## 📋 Prerequisites
 
 - [Rust](https://rustup.rs/) stable toolchain (`clippy` and `rustfmt` components)
 
-## Quick Start
+## 🚀 Quick Start
 
 ```bash
 # Build
@@ -84,7 +85,7 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --all --check
 ```
 
-## Project Structure
+## 📁 Project Structure
 
 ```
 hamoru/
@@ -108,10 +109,10 @@ hamoru/
 └── SECURITY.md               # Security policy
 ```
 
-## Contributing
+## 🤝 Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, coding rules, and testing policy.
 
-## License
+## 📄 License
 
 [MIT](LICENSE)
