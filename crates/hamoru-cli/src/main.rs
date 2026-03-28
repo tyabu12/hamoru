@@ -722,6 +722,38 @@ providers:
   #   endpoint: http://localhost:11434
 "#;
 
+const POLICY_INIT_TEMPLATE: &str = r#"# hamoru.policy.yaml — Policy Engine configuration
+#
+# Policies define model selection strategies based on constraints and preferences.
+# Routing rules map task tags to policies automatically.
+
+policies:
+  - name: cost-optimized
+    description: Prefer the cheapest model that meets basic requirements
+    constraints:
+      max_cost_per_request: 0.01
+    preferences:
+      priority: cost
+
+  - name: quality-first
+    description: Prefer the highest-quality model available
+    constraints:
+      min_quality_tier: high
+    preferences:
+      priority: quality
+
+routing_rules:
+  - match:
+      tags: [review, architecture, security]
+    policy: quality-first
+  - default:
+      policy: cost-optimized
+
+cost_limits:
+  max_cost_per_day: 10.00
+  alert_threshold: 0.8
+"#;
+
 async fn init_project() -> Result<(), HamoruError> {
     let config_path = Path::new(".hamoru/hamoru.yaml");
     if config_path.exists() {
@@ -744,11 +776,36 @@ async fn init_project() -> Result<(), HamoruError> {
             tokio::fs::set_permissions(config_path, std::fs::Permissions::from_mode(0o600)).await;
     }
 
-    println!("Created .hamoru/hamoru.yaml\n");
+    println!("Created .hamoru/hamoru.yaml");
+
+    // Create policy config
+    let policy_path = Path::new(".hamoru/hamoru.policy.yaml");
+    if !policy_path.exists() {
+        tokio::fs::write(policy_path, POLICY_INIT_TEMPLATE)
+            .await
+            .map_err(|e| HamoruError::ConfigError {
+                reason: format!("Failed to write policy config file: {e}"),
+            })?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = tokio::fs::set_permissions(
+                policy_path,
+                std::fs::Permissions::from_mode(0o600),
+            )
+            .await;
+        }
+
+        println!("Created .hamoru/hamoru.policy.yaml");
+    }
+
+    println!();
     println!("Next steps:");
     println!("  1. Set your API key: export HAMORU_ANTHROPIC_API_KEY=sk-...");
     println!("  2. Test connectivity: hamoru providers test");
     println!("  3. Run a prompt: hamoru run -m claude:claude-sonnet-4-6 'Hello'");
+    println!("  4. Use policies: hamoru run -p cost-optimized 'Hello'");
     Ok(())
 }
 
