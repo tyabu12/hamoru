@@ -1581,6 +1581,8 @@ On error, clearly communicate "what happened" and "what the user should do."
 - IDE Integration: JSON Schema generation for YAML config files (`schemars` crate — note: `ModelEntry`'s `#[serde(untagged)]` has known compatibility issues with schemars)
 - Config validation CLI: `hamoru validate` (YAML schema check + provider reachability verification)
 
+**Related documents**: [Launch & Growth Plan](launch-plan.md)
+
 ## 13. Success Metrics
 
 | Metric | Target |

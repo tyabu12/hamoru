@@ -1,6 +1,7 @@
 # hamoru — LLM Orchestration Infrastructure as Code
 
 > Detailed design: `docs/design-plan.md`
+> Launch plan: `docs/launch-plan.md`
 
 ## Current Phase
 
