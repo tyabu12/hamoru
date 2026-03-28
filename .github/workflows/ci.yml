@@ -91,6 +91,8 @@ jobs:
   # SECURITY: pr-coverage runs untrusted PR code but has NO write permissions.
   # The write token lives only in pr-comment, which never checks out code.
   # Do NOT merge these jobs or add pull-requests: write here.
+  # Do NOT change the workflow trigger to pull_request_target — that would
+  # run fork code with elevated permissions and access to repository secrets.
   pr-coverage:
     name: PR Coverage
     needs: check
@@ -109,7 +111,7 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Install cargo-tarpaulin
-        run: cargo install cargo-tarpaulin --version ${{ env.TARPAULIN_VERSION }} --locked
+        run: cargo install cargo-tarpaulin --version "$TARPAULIN_VERSION" --locked
 
       - name: Run coverage
         run: |
@@ -120,9 +122,9 @@ jobs:
             exit 0
           fi
           PCT=$(echo "$OUTPUT" | grep -oP '^\d+\.\d+% coverage' | head -1 | grep -oP '^\d+\.\d+')
-          PCT=${PCT:-0}
+          PCT=${PCT:-0.00}
           if ! [[ "$PCT" =~ ^[0-9]+\.[0-9]+$ ]]; then
-            PCT=0
+            PCT=0.00
           fi
           echo "$PCT" > coverage-pct.txt
 
@@ -284,7 +286,7 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Install cargo-tarpaulin
-        run: cargo install cargo-tarpaulin --version ${{ env.TARPAULIN_VERSION }} --locked
+        run: cargo install cargo-tarpaulin --version "$TARPAULIN_VERSION" --locked
 
       - name: Run coverage
         id: cov
