@@ -7,7 +7,7 @@
 **Phase 1: Provider Abstraction + Basic Telemetry**
 - See: `docs/design-plan.md` Section 9 (Phase 1)
 
-> Update this section manually when moving to the next Phase.
+<!-- Update this section manually when moving to the next Phase. -->
 
 ## Project Overview
 
@@ -18,49 +18,12 @@ hamoru is an orchestration infrastructure tool aiming to be "Terraform for LLMs.
 ## Language Rules
 
 - Conversation with user: **Japanese**
-- **Thinking (internal reasoning) MUST be in English**
+- **Extended thinking (internal reasoning): English**
 - Code, commit messages, comments, documentation: **English**
 
-## Architecture (5 Layers + API)
+## Architecture
 
-```
-Layer 5: Agent Collaboration Engine  — Declarative agent coordination (core differentiator)
-Layer 4: Orchestration Engine        — Workflow DAG execution
-Layer 3: Policy Engine               — Task intent (tags) → automatic model selection
-Layer 2: Provider Abstraction        — Unified trait: LlmProvider
-Layer 1: Configuration & Telemetry   — YAML config + execution history
-API:     OpenAI-Compatible Server    — POST /v1/chat/completions
-```
-
-Each layer is independently testable. Upper layers depend only on lower-layer abstractions.
-
-## Competitive Differentiation
-
-While TensorZero focuses on "statistical optimization of single inferences (POMDP)," hamoru differentiates on "declarative coordination control of multiple LLMs." The core moat is not any single feature but the integration of collaboration patterns × Policy Engine × cost impact prediction (plan).
-
-## Crate Structure
-
-```
-hamoru/
-├── Cargo.toml          # workspace root
-├── crates/
-│   ├── hamoru-core/    # All layer traits, types, errors, modules
-│   │   └── src/
-│   │       ├── lib.rs
-│   │       ├── provider/      # Layer 2
-│   │       ├── telemetry/     # Layer 1
-│   │       ├── policy/        # Layer 3
-│   │       ├── orchestrator/  # Layer 4
-│   │       ├── agents/        # Layer 5
-│   │       ├── server/        # API Layer
-│   │       └── error.rs
-│   └── hamoru-cli/     # CLI entry point
-│       └── src/
-│           └── main.rs
-├── docs/
-│   ├── design-plan.md  # Detailed design document
-│   └── decisions/      # ADRs
-```
+5 Layers + API. Details in `.claude/rules/architecture.md`.
 
 ## Technology Stack
 
@@ -77,11 +40,9 @@ hamoru/
 | Error handling | `thiserror` | Unified `HamoruError` type |
 | Local DB | `rusqlite` | Telemetry persistence (Phase 2+) |
 
-Do NOT add dependencies beyond this list without explicit justification and user confirmation. If a new dependency seems needed, discuss it in an ADR first.
+Avoid adding dependencies beyond this list without explicit justification and user confirmation. If a new dependency seems needed, discuss it in an ADR first.
 
 ## Hard Rules
-
-These rules are non-negotiable. Violations must be caught before commit.
 
 1. **No `unwrap()`** — Use `?` operator or explicit error handling. `expect()` is allowed only in test code.
 2. **No API keys in code, logs, or commits** — Credentials come from environment variables only.
@@ -93,11 +54,11 @@ These rules are non-negotiable. Violations must be caught before commit.
 
 ## Quality & Engineering Principles
 
-- **TDD (Test-Driven Development)**: Write tests first, then implement to make them pass. The workflow for each feature is: trait definition → tests against trait (using mock/stub) → implementation to pass tests. No implementation code is committed without corresponding tests. **Exception**: Phase 0 skeletons (empty trait impls, type definitions) are exempt — compile + clippy clean is the completion criteria.
-- **DRY (Don't Repeat Yourself)**: Extract shared logic into common functions or traits. Duplication across providers or layers should be refactored immediately.
-- **SOLID Principles**: Applied through Rust idioms — single-responsibility modules, trait-based extension, focused trait interfaces (`LlmProvider` vs `TelemetryStore`), dependency inversion via `&dyn Trait`.
-- **Maintainability first**: Favor clarity over cleverness. Write code that is readable and easy to change.
-- **Performance and cost awareness**: Be mindful of token usage, API call count, and latency overhead. Avoid unnecessary LLM calls in orchestration logic. When there is a trade-off between performance and correctness, ask the user.
+- **TDD**: mandatory from Phase 1 onward. See Testing Policy for workflow details.
+- **DRY**: Extract shared logic into common functions or traits. Refactor duplication across providers or layers immediately.
+- Favor clarity over cleverness.
+- Dependency inversion via `&dyn Trait`; focused trait interfaces.
+- Minimize token usage and API calls in orchestration logic. Ask when trading performance vs correctness.
 
 ## Confirmation Policy
 
@@ -105,28 +66,6 @@ These rules are non-negotiable. Violations must be caught before commit.
 - When uncertain about direction or trade-offs, always ask before proceeding
 - Major refactors that change public trait signatures require user approval
 - When the current task reveals a need for significant design changes or scope shifts beyond the current Phase, stop and report to the user before proceeding
-
-## Layer Boundary Rules
-
-- Provider-specific API types (e.g., Anthropic request/response structs) must NOT leak outside the `provider/` module
-- Each Provider implements the `LlmProvider` trait and exposes only shared types externally
-- Layer 5 compiles collaboration patterns into Layer 4 `Workflow` types and delegates execution. It must NOT have its own execution loop
-
-## Provider Implementation Policy
-
-Providers are implemented directly with reqwest + serde. No third-party abstraction libraries. Reasons:
-- Immediate support for provider-specific features (Claude's Prompt Caching, OpenAI's Structured Outputs, etc.)
-- Each adapter is ~200-400 lines
-- Deep understanding of API specs directly serves the learning goal
-
-## Key Design Decisions
-
-- **Condition evaluation default: Tool Calling (v2)** — Workflow step transitions use `report_status` tool call by default. STATUS line parsing (v1) is kept as fallback for models without tool support. See design-plan.md Section 9.1.2.
-- **ContextPolicy on workflow steps** — Steps can declare `context_policy: keep_last_n` to control message history. `SummarizeOnOverflow` is handled by Layer 5 inserting summary steps into the DAG. See design-plan.md Section 6.4.1.
-- **Logging levels**: Default (step summary), `--verbose` (policy reasons, tokens), `--debug` (HTTP headers, raw SSE). See design-plan.md Section 11.2.
-- **Failure UX**: Every error message must tell the user what happened AND what to do next. See design-plan.md Section 11.3 for the full scenario table.
-- **YAML schema changes**: No breaking changes to YAML schema fields without bumping `version`. Additive fields are `Option` with defaults. See design-plan.md Section 7.1. Do NOT rename or remove existing YAML fields without user confirmation.
-- **MessageContent enum (deviation from design doc)** — Design doc specifies `Message.content: Vec<ContentPart>`, but implementation uses `MessageContent::Text(String) | MessageContent::Parts(Vec<ContentPart>)` enum to avoid heap-allocating a `Vec` for the 95%+ plain-text case. Approved during Phase 0 planning.
 
 ## Rust Coding Conventions
 
@@ -164,7 +103,7 @@ Prefix the subject line with a single emoji that captures the spirit of the chan
 - ADRs are for Claude Code consumption — write in a structured, LLM-friendly format (clear sections, explicit rationale, concise)
 - Each Phase completion produces at least one ADR
 
-**Planned ADRs (do NOT reuse these numbers):**
+**Planned ADRs (these numbers are reserved):**
 
 | Number | Title | Source |
 |--------|-------|--------|
@@ -191,6 +130,14 @@ Next available number: **003**. Increment sequentially from here.
 | 5 | API Server (serve) | design-plan.md Section 9 (Phase 5) |
 | 6 | Agent Collaboration Engine | design-plan.md Section 9 (Phase 6) |
 
-**Before starting each Phase**: Read ONLY the corresponding Phase section in `docs/design-plan.md` (typically 30-50 lines). Do NOT read the entire document — it is ~1500 lines and will waste context.
+**Before starting each Phase**: Read ONLY the corresponding Phase section in `docs/design-plan.md` (typically 30-50 lines). Avoid reading the entire document — it is ~1500 lines and will waste context.
 
 **On Phase completion**: Record an ADR in `docs/decisions/`.
+
+## Rules Reference
+
+| File | Scope | Loaded when |
+|------|-------|-------------|
+| `.claude/rules/architecture.md` | Architecture, crate structure, layer boundaries, competitive positioning | Always |
+| `.claude/rules/design-decisions.md` | Design decisions, error patterns | Always |
+| `.claude/rules/provider.md` | Provider implementation rules | Editing `crates/hamoru-core/src/provider/**` |
