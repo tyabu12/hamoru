@@ -16,14 +16,14 @@ with policy-based model selection and cost impact prediction.
 
 </div>
 
+> **This project is under active development and is not production-ready.**
+> Use at your own risk. APIs and configuration formats may change without notice.
+
 ## Key Differentiators
 
 1. **Declarative Agent Collaboration** — Define LLM collaboration patterns (Generator/Evaluator, Pipeline, Debate) in YAML
 2. **Policy as Code** — Intent-based model selection: `tags: [review] → quality-first policy → Opus auto-selected`
 3. **Cost Impact Prediction** — `hamoru plan` simulates cost changes before applying policy updates
-
-> **This project is under active development and is not production-ready.**
-> Use at your own risk. APIs and configuration formats may change without notice.
 
 ## Current Phase
 
