@@ -10,7 +10,7 @@ test-utils = []
 [dependencies]
 async-trait = "0.1"
 bytes = "1"
-chrono = { version = "0.4", features = ["serde"] }
+chrono = { version = "0.4.20", features = ["serde"] }
 futures = "0.3"
 futures-core = "0.3"
 rand = "0.8"
