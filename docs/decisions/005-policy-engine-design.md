@@ -81,3 +81,9 @@ pub struct RoutingRule {
 - `hamoru init` generates a starter `hamoru.policy.yaml`
 - Quality tier classification is automatic but may need refinement for unusual pricing models
 - Scoring weights are hardcoded; future ADR may introduce user-configurable weights
+
+## Deferred to Future Phases
+
+- **Accumulated cost tracking for per_workflow / per_collaboration**: Phase 3 guards against single-request exceeding these limits. Accumulated tracking requires workflow/collaboration session state, which is the Orchestrator (Phase 4) and Agent Collaboration Engine (Phase 6) responsibility. They pass running totals to `check_cost_limits`.
+- **Cost-actuals-based scoring**: `score_by_cost` uses static per-token pricing from ModelInfo. Using historical cost-per-request from MetricsCache is a future optimization when sufficient telemetry data volume justifies it.
+- **simulate_cost_impact precision**: Current implementation uses a conservative heuristic. Full traffic simulation (routing each historical request through both configs) requires Phase 4's workflow execution context. The simplified version provides directional guidance for `hamoru plan`.

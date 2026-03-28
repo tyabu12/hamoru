@@ -310,7 +310,8 @@ impl PolicyEngine for DefaultPolicyEngine {
             }
         }
 
-        // Check per_workflow limit
+        // Check per_workflow limit (single-request check here; accumulated tracking
+        // is the Orchestrator's responsibility in Phase 4, which passes running totals)
         if let Some(max) = limits.max_cost_per_workflow
             && estimated_cost > max
         {
@@ -323,7 +324,8 @@ impl PolicyEngine for DefaultPolicyEngine {
             });
         }
 
-        // Check per_collaboration limit
+        // Check per_collaboration limit (same as per_workflow — single-request guard;
+        // Phase 6 Agent Collaboration Engine tracks accumulated session costs)
         if let Some(max) = limits.max_cost_per_collaboration
             && estimated_cost > max
         {
@@ -508,6 +510,24 @@ mod tests {
             .unwrap();
         assert_eq!(selection.policy_applied, "cost-optimized");
         assert_eq!(selection.model, "llama3.3:70b");
+    }
+
+    #[test]
+    fn empty_available_models_returns_error() {
+        let engine = DefaultPolicyEngine::new(basic_config());
+        let request = RoutingRequest {
+            policy_name: Some("cost-optimized".to_string()),
+            ..Default::default()
+        };
+        let err = engine
+            .select_model(&request, &[], &empty_metrics_cache())
+            .unwrap_err();
+        match err {
+            HamoruError::NoModelSatisfiesPolicy { policy, .. } => {
+                assert_eq!(policy, "cost-optimized");
+            }
+            other => panic!("Expected NoModelSatisfiesPolicy, got: {other:?}"),
+        }
     }
 
     #[test]

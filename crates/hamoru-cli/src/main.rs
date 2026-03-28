@@ -369,6 +369,14 @@ async fn run_prompt(args: RunArgs) -> Result<(), HamoruError> {
             }
         }
 
+        if all_models.is_empty() {
+            return Err(HamoruError::ConfigError {
+                reason: "No models available from any provider. \
+                         Check that providers are configured and accessible in hamoru.yaml."
+                    .to_string(),
+            });
+        }
+
         // Build routing request
         let request = hamoru_core::policy::RoutingRequest {
             tags: args.tags.clone(),
