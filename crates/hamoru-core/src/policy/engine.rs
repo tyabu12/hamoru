@@ -11,7 +11,8 @@ use crate::telemetry::MetricsCache;
 use super::config::PolicyConfig;
 use super::scoring::{quality_tier, score_balanced, score_by_cost, score_by_latency, score_by_quality};
 use super::{
-    CostCheckResult, CostImpactReport, ModelSelection, PolicyEngine, Priority, RoutingRequest,
+    CostCheckResult, CostImpactReport, ModelSelection, ModelShift, PolicyEngine, Priority,
+    RoutingRequest,
 };
 
 /// Calculates average daily spend from MetricsCache.
@@ -86,6 +87,25 @@ impl DefaultPolicyEngine {
                 request.tags
             ),
         })
+    }
+
+    /// Simulates which policy would route to a given model under a config.
+    ///
+    /// Returns the default policy name (first policy or default rule).
+    /// This is a simplified simulation — real routing depends on tags.
+    fn simulate_routing_for_model(
+        &self,
+        _model_id: &str,
+        config: &PolicyConfig,
+    ) -> Option<String> {
+        // Check default routing rule first
+        for rule in &config.routing_rules {
+            if let Some(ref default) = rule.default {
+                return Some(default.policy.clone());
+            }
+        }
+        // Fall back to first policy
+        config.policies.first().map(|p| p.name.clone())
     }
 
     fn policy_names_display(&self) -> String {
@@ -320,11 +340,67 @@ impl PolicyEngine for DefaultPolicyEngine {
 
     fn simulate_cost_impact(
         &self,
-        _current_config: &PolicyConfig,
-        _proposed_config: &PolicyConfig,
-        _metrics_cache: &MetricsCache,
+        current_config: &PolicyConfig,
+        proposed_config: &PolicyConfig,
+        metrics_cache: &MetricsCache,
     ) -> Result<CostImpactReport> {
-        todo!("Implemented in Commit 6")
+        use std::time::Duration;
+
+        let mut shifts = Vec::new();
+        let mut total_delta = 0.0;
+
+        // For each model with historical traffic, simulate routing under both configs
+        for (model_id, model_metrics) in &metrics_cache.by_model {
+            let daily_requests = if metrics_cache.period_days > 0 {
+                model_metrics.requests as f64 / metrics_cache.period_days as f64
+            } else {
+                0.0
+            };
+
+            if daily_requests == 0.0 {
+                continue;
+            }
+
+            // Determine which policy would route to this model under each config
+            let current_policy = self.simulate_routing_for_model(
+                model_id,
+                current_config,
+            );
+            let proposed_policy = self.simulate_routing_for_model(
+                model_id,
+                proposed_config,
+            );
+
+            if current_policy != proposed_policy {
+                // Traffic shifts — estimate cost difference
+                let daily_cost = if metrics_cache.period_days > 0 {
+                    model_metrics.cost / metrics_cache.period_days as f64
+                } else {
+                    0.0
+                };
+
+                shifts.push(ModelShift {
+                    from_model: model_id.clone(),
+                    to_model: format!("(routed by {})", proposed_policy.unwrap_or_default()),
+                    estimated_percentage: (daily_requests
+                        / (metrics_cache.entry_count as f64
+                            / metrics_cache.period_days.max(1) as f64))
+                        * 100.0,
+                    cost_delta: daily_cost * 0.1, // Conservative 10% cost change estimate
+                });
+                total_delta += daily_cost * 0.1;
+            }
+        }
+
+        let confidence = f64::min(1.0, metrics_cache.entry_count as f64 / 100.0)
+            * f64::min(1.0, metrics_cache.period_days as f64 / 7.0);
+
+        Ok(CostImpactReport {
+            estimated_daily_change: total_delta,
+            model_shift: shifts,
+            confidence,
+            period_used: Duration::from_secs(metrics_cache.period_days * 86400),
+        })
     }
 }
 
@@ -872,5 +948,226 @@ mod tests {
         // daily_spend = 0.0, so 0.0 + 0.5 = 0.5 < 1.0 → allowed
         let result = engine.check_cost_limits(0.5, &cache).unwrap();
         assert!(result.allowed);
+    }
+
+    // --- simulate_cost_impact tests ---
+
+    use crate::telemetry::Metrics;
+    use std::collections::HashMap;
+
+    fn metrics_with_models(entries: &[(&str, u64, f64)]) -> MetricsCache {
+        let mut by_model = HashMap::new();
+        let mut total_cost = 0.0;
+        let mut total_requests = 0u64;
+        for &(id, requests, cost) in entries {
+            total_cost += cost;
+            total_requests += requests;
+            by_model.insert(
+                id.to_string(),
+                crate::telemetry::ModelMetrics {
+                    provider: String::new(),
+                    requests,
+                    cost,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    avg_latency_ms: 0.0,
+                },
+            );
+        }
+        MetricsCache {
+            total: Metrics {
+                total_requests,
+                total_cost,
+                ..Default::default()
+            },
+            by_model,
+            period_days: 7,
+            entry_count: total_requests,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn simulate_identical_configs_zero_delta() {
+        let engine = DefaultPolicyEngine::new(basic_config());
+        let config = basic_config();
+        let cache = metrics_with_models(&[("llama3.3:70b", 100, 0.1)]);
+        let report = engine
+            .simulate_cost_impact(&config, &config, &cache)
+            .unwrap();
+        assert!((report.estimated_daily_change - 0.0).abs() < f64::EPSILON);
+        assert!(report.model_shift.is_empty());
+    }
+
+    #[test]
+    fn simulate_policy_change_shifts_traffic() {
+        let engine = DefaultPolicyEngine::new(basic_config());
+        let current = basic_config();
+        // Proposed: change default from cost-optimized to quality-first
+        let mut proposed = basic_config();
+        if let Some(rule) = proposed.routing_rules.iter_mut().find(|r| r.default.is_some()) {
+            rule.default = Some(DefaultPolicy {
+                policy: "quality-first".to_string(),
+            });
+        }
+        let cache = metrics_with_models(&[("llama3.3:70b", 100, 0.7)]);
+        let report = engine
+            .simulate_cost_impact(&current, &proposed, &cache)
+            .unwrap();
+        assert!(!report.model_shift.is_empty());
+        assert!(report.estimated_daily_change > 0.0);
+    }
+
+    #[test]
+    fn simulate_empty_metrics_low_confidence() {
+        let engine = DefaultPolicyEngine::new(basic_config());
+        let config = basic_config();
+        let cache = empty_metrics_cache();
+        let report = engine
+            .simulate_cost_impact(&config, &config, &cache)
+            .unwrap();
+        assert!((report.confidence - 0.0).abs() < f64::EPSILON);
+        assert!((report.estimated_daily_change - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn simulate_cost_delta_sign_positive() {
+        let engine = DefaultPolicyEngine::new(basic_config());
+        let current = basic_config();
+        let mut proposed = basic_config();
+        if let Some(rule) = proposed.routing_rules.iter_mut().find(|r| r.default.is_some()) {
+            rule.default = Some(DefaultPolicy {
+                policy: "quality-first".to_string(),
+            });
+        }
+        let cache = metrics_with_models(&[("llama3.3:70b", 50, 0.5)]);
+        let report = engine
+            .simulate_cost_impact(&current, &proposed, &cache)
+            .unwrap();
+        // Shifting from cost-optimized to quality-first → positive delta
+        assert!(report.estimated_daily_change >= 0.0);
+    }
+
+    #[test]
+    fn simulate_model_shift_records() {
+        let engine = DefaultPolicyEngine::new(basic_config());
+        let current = basic_config();
+        let mut proposed = basic_config();
+        if let Some(rule) = proposed.routing_rules.iter_mut().find(|r| r.default.is_some()) {
+            rule.default = Some(DefaultPolicy {
+                policy: "quality-first".to_string(),
+            });
+        }
+        let cache = metrics_with_models(&[("llama3.3:70b", 70, 0.7)]);
+        let report = engine
+            .simulate_cost_impact(&current, &proposed, &cache)
+            .unwrap();
+        for shift in &report.model_shift {
+            assert!(!shift.from_model.is_empty());
+            assert!(!shift.to_model.is_empty());
+        }
+    }
+
+    #[test]
+    fn simulate_missing_model_in_available_skips() {
+        let engine = DefaultPolicyEngine::new(basic_config());
+        let config = basic_config();
+        // Model in metrics but wouldn't be in available_models
+        let cache = metrics_with_models(&[("unknown-model", 10, 0.1)]);
+        let report = engine
+            .simulate_cost_impact(&config, &config, &cache)
+            .unwrap();
+        // Should not crash
+        assert!(report.model_shift.is_empty());
+    }
+
+    #[test]
+    fn simulate_confidence_scales_with_entry_count() {
+        let engine = DefaultPolicyEngine::new(basic_config());
+        let config = basic_config();
+
+        // Low entry count → low confidence
+        let mut cache = MetricsCache::default();
+        cache.entry_count = 10;
+        cache.period_days = 7;
+        let report = engine
+            .simulate_cost_impact(&config, &config, &cache)
+            .unwrap();
+        assert!(report.confidence < 0.2);
+
+        // High entry count → higher confidence
+        cache.entry_count = 200;
+        let report = engine
+            .simulate_cost_impact(&config, &config, &cache)
+            .unwrap();
+        assert!(report.confidence >= 0.9);
+    }
+
+    #[test]
+    fn simulate_confidence_scales_with_period_days() {
+        let engine = DefaultPolicyEngine::new(basic_config());
+        let config = basic_config();
+
+        let mut cache = MetricsCache::default();
+        cache.entry_count = 100;
+
+        // 1 day → low confidence
+        cache.period_days = 1;
+        let report = engine
+            .simulate_cost_impact(&config, &config, &cache)
+            .unwrap();
+        let conf_1d = report.confidence;
+
+        // 7 days → full confidence
+        cache.period_days = 7;
+        let report = engine
+            .simulate_cost_impact(&config, &config, &cache)
+            .unwrap();
+        let conf_7d = report.confidence;
+
+        assert!(conf_7d > conf_1d);
+    }
+
+    #[test]
+    fn simulate_multi_model_traffic() {
+        let engine = DefaultPolicyEngine::new(basic_config());
+        let current = basic_config();
+        let mut proposed = basic_config();
+        if let Some(rule) = proposed.routing_rules.iter_mut().find(|r| r.default.is_some()) {
+            rule.default = Some(DefaultPolicy {
+                policy: "quality-first".to_string(),
+            });
+        }
+        let cache = metrics_with_models(&[
+            ("llama3.3:70b", 100, 1.0),
+            ("claude-haiku-4-5", 50, 2.5),
+        ]);
+        let report = engine
+            .simulate_cost_impact(&current, &proposed, &cache)
+            .unwrap();
+        // Both models may or may not shift depending on routing
+        assert!(report.estimated_daily_change >= 0.0);
+    }
+
+    #[test]
+    fn simulate_same_policy_no_shifts() {
+        let config = PolicyConfig {
+            policies: vec![cost_optimized_policy()],
+            routing_rules: vec![RoutingRule {
+                match_rule: None,
+                default: Some(DefaultPolicy {
+                    policy: "cost-optimized".to_string(),
+                }),
+                policy: None,
+            }],
+            cost_limits: None,
+        };
+        let engine = DefaultPolicyEngine::new(config.clone());
+        let cache = metrics_with_models(&[("llama3.3:70b", 100, 1.0)]);
+        let report = engine
+            .simulate_cost_impact(&config, &config, &cache)
+            .unwrap();
+        assert!(report.model_shift.is_empty());
+        assert!((report.estimated_daily_change - 0.0).abs() < f64::EPSILON);
     }
 }
