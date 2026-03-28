@@ -14,6 +14,17 @@ use super::{
     CostCheckResult, CostImpactReport, ModelSelection, PolicyEngine, Priority, RoutingRequest,
 };
 
+/// Calculates average daily spend from MetricsCache.
+///
+/// Guards against `period_days == 0` (returns 0.0).
+fn daily_spend(cache: &MetricsCache) -> f64 {
+    if cache.period_days == 0 {
+        0.0
+    } else {
+        cache.total.total_cost / cache.period_days as f64
+    }
+}
+
 /// Default policy engine backed by a `PolicyConfig`.
 ///
 /// Synchronous — no I/O. All data arrives via method arguments.
@@ -186,19 +197,125 @@ impl PolicyEngine for DefaultPolicyEngine {
 
     fn select_fallback_model(
         &self,
-        _original: &ModelSelection,
+        original: &ModelSelection,
         _error: &HamoruError,
-        _available_models: &[ModelInfo],
+        available_models: &[ModelInfo],
     ) -> Result<Option<ModelSelection>> {
-        todo!("Implemented in Commit 5")
+        // Exclude the original model and re-run selection with the same policy
+        let filtered: Vec<ModelInfo> = available_models
+            .iter()
+            .filter(|m| m.id != original.model)
+            .cloned()
+            .collect();
+
+        if filtered.is_empty() {
+            return Ok(None);
+        }
+
+        let request = RoutingRequest {
+            policy_name: Some(original.policy_applied.clone()),
+            ..Default::default()
+        };
+
+        // Use empty metrics for fallback (historical data may be misleading)
+        let empty_cache = MetricsCache::default();
+        match self.select_model(&request, &filtered, &empty_cache) {
+            Ok(selection) => Ok(Some(selection)),
+            Err(_) => Ok(None),
+        }
     }
 
     fn check_cost_limits(
         &self,
-        _estimated_cost: f64,
-        _metrics_cache: &MetricsCache,
+        estimated_cost: f64,
+        metrics_cache: &MetricsCache,
     ) -> Result<CostCheckResult> {
-        todo!("Implemented in Commit 5")
+        let limits = match &self.config.cost_limits {
+            Some(l) => l,
+            None => {
+                return Ok(CostCheckResult {
+                    allowed: true,
+                    ..Default::default()
+                });
+            }
+        };
+
+        let alert_threshold = limits.alert_threshold.unwrap_or(0.8);
+
+        // Check per_request limit
+        if let Some(max) = limits.max_cost_per_request {
+            if estimated_cost > max {
+                return Ok(CostCheckResult {
+                    allowed: false,
+                    limit_exceeded: Some("per_request".to_string()),
+                    current_spend: estimated_cost,
+                    max_allowed: max,
+                    ..Default::default()
+                });
+            }
+        }
+
+        // Check per_day limit using MetricsCache
+        if let Some(max_daily) = limits.max_cost_per_day {
+            let daily = daily_spend(metrics_cache);
+            let projected = daily + estimated_cost;
+            if projected > max_daily {
+                return Ok(CostCheckResult {
+                    allowed: false,
+                    limit_exceeded: Some("per_day".to_string()),
+                    current_spend: daily,
+                    max_allowed: max_daily,
+                    ..Default::default()
+                });
+            }
+            // Check alert threshold
+            if daily >= alert_threshold * max_daily {
+                return Ok(CostCheckResult {
+                    allowed: true,
+                    current_spend: daily,
+                    max_allowed: max_daily,
+                    alert: true,
+                    alert_message: Some(format!(
+                        "Daily spend ${:.4} is at {:.0}% of ${:.2} limit.",
+                        daily,
+                        (daily / max_daily) * 100.0,
+                        max_daily
+                    )),
+                    ..Default::default()
+                });
+            }
+        }
+
+        // Check per_workflow limit
+        if let Some(max) = limits.max_cost_per_workflow {
+            if estimated_cost > max {
+                return Ok(CostCheckResult {
+                    allowed: false,
+                    limit_exceeded: Some("per_workflow".to_string()),
+                    current_spend: estimated_cost,
+                    max_allowed: max,
+                    ..Default::default()
+                });
+            }
+        }
+
+        // Check per_collaboration limit
+        if let Some(max) = limits.max_cost_per_collaboration {
+            if estimated_cost > max {
+                return Ok(CostCheckResult {
+                    allowed: false,
+                    limit_exceeded: Some("per_collaboration".to_string()),
+                    current_spend: estimated_cost,
+                    max_allowed: max,
+                    ..Default::default()
+                });
+            }
+        }
+
+        Ok(CostCheckResult {
+            allowed: true,
+            ..Default::default()
+        })
     }
 
     fn simulate_cost_impact(
@@ -215,7 +332,7 @@ impl PolicyEngine for DefaultPolicyEngine {
 mod tests {
     use super::*;
     use crate::policy::config::{
-        DefaultPolicy, MatchRule, PolicyConstraints, PolicyDefinition,
+        CostLimits, DefaultPolicy, MatchRule, PolicyConstraints, PolicyDefinition,
         PolicyPreferences, RoutingRule,
     };
     use crate::policy::test_fixtures::*;
@@ -532,5 +649,228 @@ mod tests {
         // Sonnet (High tier, claude provider) beats llama (Low tier, ollama)
         assert_eq!(selection.provider, "claude");
         assert_eq!(selection.model, "claude-sonnet-4-6");
+    }
+
+    // --- select_fallback_model tests ---
+
+    #[test]
+    fn fallback_excludes_original_model() {
+        let engine = DefaultPolicyEngine::new(basic_config());
+        let original = ModelSelection {
+            provider: "ollama".to_string(),
+            model: "llama3.3:70b".to_string(),
+            policy_applied: "cost-optimized".to_string(),
+            reason: String::new(),
+            estimated_cost: None,
+            score: 1.0,
+        };
+        let fallback = engine
+            .select_fallback_model(
+                &original,
+                &HamoruError::ProviderUnavailable {
+                    provider: "ollama".to_string(),
+                    reason: "test".to_string(),
+                },
+                &all_models(),
+            )
+            .unwrap();
+        let fb = fallback.unwrap();
+        assert_ne!(fb.model, "llama3.3:70b");
+    }
+
+    #[test]
+    fn fallback_returns_none_when_single_model() {
+        let engine = DefaultPolicyEngine::new(basic_config());
+        let original = ModelSelection {
+            provider: "ollama".to_string(),
+            model: "llama3.3:70b".to_string(),
+            policy_applied: "cost-optimized".to_string(),
+            reason: String::new(),
+            estimated_cost: None,
+            score: 1.0,
+        };
+        let models = vec![model_llama_70b()]; // Only the original
+        let fallback = engine
+            .select_fallback_model(
+                &original,
+                &HamoruError::ProviderUnavailable {
+                    provider: "ollama".to_string(),
+                    reason: "test".to_string(),
+                },
+                &models,
+            )
+            .unwrap();
+        assert!(fallback.is_none());
+    }
+
+    #[test]
+    fn fallback_picks_next_best() {
+        let engine = DefaultPolicyEngine::new(basic_config());
+        let original = ModelSelection {
+            provider: "ollama".to_string(),
+            model: "llama3.3:70b".to_string(),
+            policy_applied: "cost-optimized".to_string(),
+            reason: String::new(),
+            estimated_cost: None,
+            score: 1.0,
+        };
+        let fallback = engine
+            .select_fallback_model(
+                &original,
+                &HamoruError::ProviderUnavailable {
+                    provider: "ollama".to_string(),
+                    reason: "test".to_string(),
+                },
+                &all_models(),
+            )
+            .unwrap()
+            .unwrap();
+        // Next cheapest after llama is haiku
+        assert_eq!(fallback.model, "claude-haiku-4-5");
+    }
+
+    #[test]
+    fn fallback_preserves_policy_constraints() {
+        let engine = DefaultPolicyEngine::new(basic_config());
+        let original = ModelSelection {
+            provider: "claude".to_string(),
+            model: "claude-sonnet-4-6".to_string(),
+            policy_applied: "quality-first".to_string(),
+            reason: String::new(),
+            estimated_cost: None,
+            score: 1.0,
+        };
+        // quality-first requires High tier — no other High tier model
+        let fallback = engine
+            .select_fallback_model(
+                &original,
+                &HamoruError::ProviderUnavailable {
+                    provider: "claude".to_string(),
+                    reason: "test".to_string(),
+                },
+                &all_models(),
+            )
+            .unwrap();
+        // No High-tier fallback exists → None
+        assert!(fallback.is_none());
+    }
+
+    // --- check_cost_limits tests ---
+
+    fn config_with_limits(limits: CostLimits) -> PolicyConfig {
+        PolicyConfig {
+            policies: vec![cost_optimized_policy()],
+            routing_rules: vec![],
+            cost_limits: Some(limits),
+        }
+    }
+
+    #[test]
+    fn cost_check_no_limits_configured() {
+        let engine = DefaultPolicyEngine::new(basic_config()); // no cost_limits
+        let result = engine
+            .check_cost_limits(1.0, &empty_metrics_cache())
+            .unwrap();
+        assert!(result.allowed);
+        assert!(result.limit_exceeded.is_none());
+    }
+
+    #[test]
+    fn cost_check_under_daily_limit() {
+        let config = config_with_limits(CostLimits {
+            max_cost_per_day: Some(10.0),
+            ..Default::default()
+        });
+        let engine = DefaultPolicyEngine::new(config);
+        let result = engine
+            .check_cost_limits(0.01, &empty_metrics_cache())
+            .unwrap();
+        assert!(result.allowed);
+    }
+
+    #[test]
+    fn cost_check_exceeds_daily_limit() {
+        let config = config_with_limits(CostLimits {
+            max_cost_per_day: Some(1.0),
+            ..Default::default()
+        });
+        let engine = DefaultPolicyEngine::new(config);
+        // Create metrics showing $0.9/day spend over 7 days
+        let mut cache = MetricsCache::default();
+        cache.total.total_cost = 6.3; // 6.3 / 7 = 0.9/day
+        cache.period_days = 7;
+
+        let result = engine.check_cost_limits(0.2, &cache).unwrap();
+        assert!(!result.allowed);
+        assert_eq!(result.limit_exceeded.as_deref(), Some("per_day"));
+    }
+
+    #[test]
+    fn cost_check_exceeds_per_request_limit() {
+        let config = config_with_limits(CostLimits {
+            max_cost_per_request: Some(0.05),
+            ..Default::default()
+        });
+        let engine = DefaultPolicyEngine::new(config);
+        let result = engine
+            .check_cost_limits(0.10, &empty_metrics_cache())
+            .unwrap();
+        assert!(!result.allowed);
+        assert_eq!(result.limit_exceeded.as_deref(), Some("per_request"));
+    }
+
+    #[test]
+    fn cost_check_alert_threshold() {
+        let config = config_with_limits(CostLimits {
+            max_cost_per_day: Some(10.0),
+            alert_threshold: Some(0.8), // Alert at 80%
+            ..Default::default()
+        });
+        let engine = DefaultPolicyEngine::new(config);
+        // Daily spend = 8.5 (85% of 10.0) → alert
+        let mut cache = MetricsCache::default();
+        cache.total.total_cost = 59.5; // 59.5 / 7 = 8.5
+        cache.period_days = 7;
+
+        let result = engine.check_cost_limits(0.01, &cache).unwrap();
+        assert!(result.allowed);
+        assert!(result.alert);
+        assert!(result.alert_message.is_some());
+    }
+
+    #[test]
+    fn cost_check_uses_metrics_daily_spend() {
+        let config = config_with_limits(CostLimits {
+            max_cost_per_day: Some(5.0),
+            ..Default::default()
+        });
+        let engine = DefaultPolicyEngine::new(config);
+        let mut cache = MetricsCache::default();
+        cache.total.total_cost = 28.0; // 28 / 7 = 4.0/day
+        cache.period_days = 7;
+
+        // 4.0 + 0.5 = 4.5 < 5.0 → allowed
+        let result = engine.check_cost_limits(0.5, &cache).unwrap();
+        assert!(result.allowed);
+
+        // 4.0 + 1.5 = 5.5 > 5.0 → denied
+        let result = engine.check_cost_limits(1.5, &cache).unwrap();
+        assert!(!result.allowed);
+    }
+
+    #[test]
+    fn cost_check_period_days_zero() {
+        let config = config_with_limits(CostLimits {
+            max_cost_per_day: Some(1.0),
+            ..Default::default()
+        });
+        let engine = DefaultPolicyEngine::new(config);
+        let mut cache = MetricsCache::default();
+        cache.period_days = 0; // No data period
+        cache.total.total_cost = 100.0; // Should not cause division by zero
+
+        // daily_spend = 0.0, so 0.0 + 0.5 = 0.5 < 1.0 → allowed
+        let result = engine.check_cost_limits(0.5, &cache).unwrap();
+        assert!(result.allowed);
     }
 }
