@@ -28,6 +28,7 @@ hamoru/
 │   │       ├── lib.rs
 │   │       ├── provider/      # Layer 2
 │   │       ├── telemetry/     # Layer 1
+│   │       ├── config/        # Layer 1 (config loading)
 │   │       ├── policy/        # Layer 3
 │   │       ├── orchestrator/  # Layer 4
 │   │       ├── agents/        # Layer 5

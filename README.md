@@ -75,7 +75,7 @@ hamoru/
 
 ## Current Phase
 
-**Phase 2: Telemetry + plan**
+**Phase 3: Policy Engine**
 
 See [design-plan.md](docs/design-plan.md) for the full roadmap.
 
