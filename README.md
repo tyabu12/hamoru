@@ -68,9 +68,14 @@ hamoru/
 └── CLAUDE.md           # Project context for Claude Code
 ```
 
+## Status
+
+> **This project is under active development and is not production-ready.**
+> Use at your own risk. APIs and configuration formats may change without notice.
+
 ## Current Phase
 
-**Phase 1: Provider Abstraction + Basic Telemetry**
+**Phase 2: Telemetry + plan**
 
 See [design-plan.md](docs/design-plan.md) for the full roadmap.
 

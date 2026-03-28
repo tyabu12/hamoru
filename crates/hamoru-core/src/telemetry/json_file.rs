@@ -126,6 +126,10 @@ impl TelemetryStore for JsonFileTelemetryStore {
     async fn load_cache(&self) -> Result<MetricsCache> {
         self.inner.load_cache().await
     }
+
+    async fn query_detailed_metrics(&self, period: Duration) -> Result<MetricsCache> {
+        self.inner.query_detailed_metrics(period).await
+    }
 }
 
 #[cfg(test)]
@@ -148,6 +152,7 @@ mod tests {
             cost: 0.0033,
             latency_ms: 500,
             success: true,
+            tags: vec![],
         }
     }
 

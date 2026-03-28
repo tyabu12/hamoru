@@ -2,7 +2,7 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use clap::{Parser, Subcommand};
@@ -12,7 +12,7 @@ use hamoru_core::error::HamoruError;
 use hamoru_core::provider::ProviderRegistry;
 use hamoru_core::provider::factory::build_registry;
 use hamoru_core::provider::types::*;
-use hamoru_core::telemetry::json_file::JsonFileTelemetryStore;
+use hamoru_core::telemetry::sqlite::{SqliteTelemetryStore, migrate_from_json};
 use hamoru_core::telemetry::{HistoryEntry, TelemetryStore};
 use tracing_subscriber::EnvFilter;
 
@@ -147,10 +147,7 @@ async fn main() {
 
     let result = match cli.command {
         Commands::Init => init_project().await,
-        Commands::Plan => {
-            eprintln!("Not yet implemented: plan");
-            Ok(())
-        }
+        Commands::Plan => plan_command().await,
         Commands::Status => {
             eprintln!("Not yet implemented: status");
             Ok(())
@@ -174,21 +171,19 @@ async fn main() {
                 Ok(())
             }
         },
-        Commands::Metrics(_args) => {
-            eprintln!("Not yet implemented: metrics");
-            Ok(())
-        }
+        Commands::Metrics(args) => metrics_report(args).await,
         Commands::Telemetry(cmd) => match cmd {
-            TelemetryCommands::Show => {
-                eprintln!("Not yet implemented: telemetry show");
-                Ok(())
-            }
+            TelemetryCommands::Show => telemetry_show().await,
             TelemetryCommands::Pull => {
-                eprintln!("Not yet implemented: telemetry pull");
+                eprintln!(
+                    "Not yet implemented: telemetry pull (requires remote storage configuration)"
+                );
                 Ok(())
             }
             TelemetryCommands::Push => {
-                eprintln!("Not yet implemented: telemetry push");
+                eprintln!(
+                    "Not yet implemented: telemetry push (requires remote storage configuration)"
+                );
                 Ok(())
             }
         },
@@ -381,7 +376,7 @@ async fn run_prompt(args: RunArgs) -> Result<(), HamoruError> {
     ensure_hamoru_dir().await?;
 
     // Telemetry recording
-    let telemetry = JsonFileTelemetryStore::new(".hamoru/state.json").await?;
+    let telemetry = create_telemetry_store().await?;
     let model_info = provider.model_info(&model).await.ok();
     let cost = model_info
         .map(|mi| usage.calculate_cost(&mi))
@@ -394,6 +389,7 @@ async fn run_prompt(args: RunArgs) -> Result<(), HamoruError> {
         cost,
         latency_ms,
         success: true,
+        tags: vec![],
     };
     telemetry.record(&entry).await?;
 
@@ -402,6 +398,215 @@ async fn run_prompt(args: RunArgs) -> Result<(), HamoruError> {
         "\n---\nTokens: {} in / {} out | Cost: ${:.6} | Latency: {}ms",
         usage.input_tokens, usage.output_tokens, cost, latency_ms
     );
+    Ok(())
+}
+
+/// Creates a SQLite telemetry store, migrating from JSON if needed.
+///
+/// If `.hamoru/state.json` exists and `.hamoru/state.db` does not,
+/// automatically migrates data and renames the JSON file.
+/// Uses the config's `telemetry.local.path` if a config file is available,
+/// otherwise defaults to `.hamoru/state.db`.
+async fn create_telemetry_store() -> Result<SqliteTelemetryStore, HamoruError> {
+    let db_path = find_config_path()
+        .ok()
+        .and_then(|p| config::load_config(&p).ok())
+        .map(|c| PathBuf::from(c.telemetry_local_path()))
+        .unwrap_or_else(|| PathBuf::from(".hamoru/state.db"));
+    let json_path = PathBuf::from(".hamoru/state.json");
+
+    let store = SqliteTelemetryStore::new(&db_path).await?;
+
+    // Auto-migrate from Phase 1 JSON format if needed
+    if json_path.exists() {
+        let result = migrate_from_json(&json_path, &store).await?;
+        if result.entries_migrated > 0 {
+            tracing::info!(
+                migrated = result.entries_migrated,
+                skipped = result.entries_skipped,
+                "Migrated telemetry data from state.json to state.db"
+            );
+        }
+        // Rename to prevent re-migration
+        let migrated_path = json_path.with_extension("json.migrated");
+        if let Err(e) = tokio::fs::rename(&json_path, &migrated_path).await {
+            tracing::warn!("Failed to rename state.json after migration: {e}");
+        }
+    }
+
+    Ok(store)
+}
+
+/// Parses a human-readable duration string like "1d", "7d", "30d".
+fn parse_period(s: &str) -> Result<Duration, HamoruError> {
+    let s = s.trim();
+    if let Some(days) = s.strip_suffix('d') {
+        let n: u64 = days.parse().map_err(|_| HamoruError::ConfigError {
+            reason: format!("Invalid period '{s}'. Expected format: Nd (e.g., 1d, 7d, 30d)"),
+        })?;
+        if n == 0 {
+            return Err(HamoruError::ConfigError {
+                reason: "Period must be at least 1 day.".to_string(),
+            });
+        }
+        Ok(Duration::from_secs(n * 24 * 3600))
+    } else if let Some(hours) = s.strip_suffix('h') {
+        let n: u64 = hours.parse().map_err(|_| HamoruError::ConfigError {
+            reason: format!("Invalid period '{s}'. Expected format: Nh (e.g., 1h, 24h)"),
+        })?;
+        if n == 0 {
+            return Err(HamoruError::ConfigError {
+                reason: "Period must be at least 1 hour.".to_string(),
+            });
+        }
+        Ok(Duration::from_secs(n * 3600))
+    } else {
+        Err(HamoruError::ConfigError {
+            reason: format!("Invalid period '{s}'. Expected format: Nd or Nh (e.g., 7d, 24h)"),
+        })
+    }
+}
+
+/// Formats a MetricsCache into a human-readable report string.
+fn format_metrics_report(
+    cache: &hamoru_core::telemetry::MetricsCache,
+    period_label: &str,
+) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("Metrics report ({period_label}):\n"));
+    out.push_str(&format!(
+        "  Total requests: {}\n",
+        cache.total.total_requests
+    ));
+    out.push_str(&format!("  Total cost: ${:.2}\n", cache.total.total_cost));
+    if cache.total.total_requests > 0 {
+        out.push_str(&format!(
+            "  Avg latency: {:.1}ms\n",
+            cache.total.avg_latency_ms
+        ));
+    }
+
+    if !cache.by_model.is_empty() {
+        out.push_str("  Model breakdown:\n");
+        // Sort by cost descending
+        let mut models: Vec<_> = cache.by_model.iter().collect();
+        models.sort_by(|a, b| {
+            b.1.cost
+                .partial_cmp(&a.1.cost)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        for (model, metrics) in &models {
+            out.push_str(&format!(
+                "    {}: {} requests (${:.2})\n",
+                model, metrics.requests, metrics.cost
+            ));
+        }
+    }
+
+    out
+}
+
+/// Runs the `hamoru telemetry show` command.
+async fn telemetry_show() -> Result<(), HamoruError> {
+    ensure_hamoru_dir().await?;
+    let store = create_telemetry_store().await?;
+
+    let count = store.entry_count().await?;
+    let db_path = store.path().to_path_buf();
+
+    println!("Telemetry store: {}", db_path.display());
+
+    // File size
+    if let Ok(metadata) = tokio::fs::metadata(&db_path).await {
+        let size_kb = metadata.len() as f64 / 1024.0;
+        if size_kb < 1024.0 {
+            println!("  Size: {size_kb:.1} KB");
+        } else {
+            println!("  Size: {:.1} MB", size_kb / 1024.0);
+        }
+    }
+
+    println!("  Total entries: {count}");
+
+    if let Some((oldest, newest)) = store.date_range().await? {
+        // Truncate to date portion for readability
+        let oldest_date = oldest.split('T').next().unwrap_or(&oldest);
+        let newest_date = newest.split('T').next().unwrap_or(&newest);
+        println!("  Date range: {oldest_date} to {newest_date}");
+    }
+
+    // Show top models
+    if count > 0 {
+        let cache = store
+            .query_detailed_metrics(Duration::from_secs(365 * 24 * 3600))
+            .await?;
+        if !cache.by_model.is_empty() {
+            println!("  Top models:");
+            let mut models: Vec<_> = cache.by_model.iter().collect();
+            models.sort_by(|a, b| b.1.requests.cmp(&a.1.requests));
+            for (model, metrics) in models.iter().take(5) {
+                println!(
+                    "    {}: {} requests (${:.2})",
+                    model, metrics.requests, metrics.cost
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Runs the `hamoru plan` command.
+///
+/// Shows telemetry-based cost projection. Policy-aware cost impact
+/// prediction is available after configuring policies (Phase 3).
+async fn plan_command() -> Result<(), HamoruError> {
+    ensure_hamoru_dir().await?;
+    let store = create_telemetry_store().await?;
+    let period = Duration::from_secs(7 * 24 * 3600);
+    let cache = store.query_detailed_metrics(period).await?;
+    let projection = hamoru_core::telemetry::projection::project_costs(&cache);
+
+    if projection.daily_requests == 0.0 {
+        println!("No telemetry data available. Run some prompts first with 'hamoru run'.");
+        return Ok(());
+    }
+
+    println!("Telemetry summary (last {}d):", projection.data_period_days);
+    println!(
+        "  Daily avg: ${:.2}/day ({:.0} requests/day)",
+        projection.daily_cost, projection.daily_requests
+    );
+
+    if !projection.top_models.is_empty() {
+        println!("  Model breakdown:");
+        for m in &projection.top_models {
+            println!(
+                "    {}: {:.0} req/day (${:.2}/day, {:.1}%)",
+                m.model, m.daily_requests, m.daily_cost, m.pct_of_total
+            );
+        }
+    }
+
+    println!(
+        "  Confidence: {:.0}% ({}d of data)",
+        projection.confidence * 100.0,
+        projection.data_period_days
+    );
+    println!();
+    println!("Note: Policy-based cost prediction available after configuring policies.");
+
+    Ok(())
+}
+
+/// Runs the `hamoru metrics` command.
+async fn metrics_report(args: MetricsArgs) -> Result<(), HamoruError> {
+    ensure_hamoru_dir().await?;
+    let period = parse_period(&args.period)?;
+    let store = create_telemetry_store().await?;
+    let cache = store.query_detailed_metrics(period).await?;
+    let report = format_metrics_report(&cache, &args.period);
+    print!("{report}");
     Ok(())
 }
 

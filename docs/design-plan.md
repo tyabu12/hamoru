@@ -1181,12 +1181,12 @@ hamoru run -m local:llama3.3:70b "Hello"
 **Goal**: SQLite/S3 persistence and Telemetry-based cost impact prediction
 
 **Deliverables:**
-- [ ] SQLite TelemetryStore implementation (replacing Phase 1 JSON Store)
-- [ ] S3/R2 Remote Store implementation
-- [ ] CompositeStore (Local → Remote sync)
-- [ ] Metrics memory cache (loaded at startup, periodically updated)
-- [ ] `hamoru plan` — Telemetry-based cost impact prediction
-- [ ] `hamoru metrics` basic report
+- [x] SQLite TelemetryStore implementation (replacing Phase 1 JSON Store)
+- [ ] S3/R2 Remote Store implementation (deferred — ADR 004)
+- [ ] CompositeStore (Local → Remote sync) (deferred — ADR 004)
+- [x] Metrics memory cache (loaded at startup, periodically updated)
+- [x] `hamoru plan` — Telemetry-based cost impact prediction
+- [x] `hamoru metrics` basic report
 
 **Completion criteria:**
 ```bash

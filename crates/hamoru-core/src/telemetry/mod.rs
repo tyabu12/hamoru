@@ -6,7 +6,10 @@
 
 pub mod json_file;
 pub mod memory;
+pub mod projection;
+pub mod sqlite;
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -29,7 +32,12 @@ pub trait TelemetryStore: Send + Sync {
     async fn query_metrics(&self, period: Duration) -> Result<Metrics>;
 
     /// Loads the cached metrics snapshot for Policy Engine use.
+    ///
+    /// Uses a default period of 7 days.
     async fn load_cache(&self) -> Result<MetricsCache>;
+
+    /// Queries detailed metrics with per-model and per-provider breakdowns.
+    async fn query_detailed_metrics(&self, period: Duration) -> Result<MetricsCache>;
 }
 
 /// A single execution history record.
@@ -49,6 +57,11 @@ pub struct HistoryEntry {
     pub latency_ms: u64,
     /// Whether the execution completed successfully.
     pub success: bool,
+    /// Tags for categorization (e.g., "review", "security").
+    ///
+    /// Empty until Policy Engine (Phase 3) populates them.
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 /// Aggregated metrics over a time period.
@@ -66,7 +79,36 @@ pub struct Metrics {
     pub avg_latency_ms: f64,
 }
 
+/// Per-model metrics breakdown.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ModelMetrics {
+    /// Provider name (e.g., "claude").
+    pub provider: String,
+    /// Number of requests.
+    pub requests: u64,
+    /// Total cost in USD.
+    pub cost: f64,
+    /// Total input tokens.
+    pub input_tokens: u64,
+    /// Total output tokens.
+    pub output_tokens: u64,
+    /// Average latency in milliseconds.
+    pub avg_latency_ms: f64,
+}
+
 /// Cached metrics snapshot for fast Policy Engine lookups.
-// TODO: Expand with per-model and per-provider breakdowns in Phase 2.
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct MetricsCache;
+///
+/// Contains aggregated totals plus per-model and per-provider breakdowns.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MetricsCache {
+    /// Aggregated totals.
+    pub total: Metrics,
+    /// Per-model breakdown (key: model ID).
+    pub by_model: HashMap<String, ModelMetrics>,
+    /// Per-provider breakdown (key: provider name).
+    pub by_provider: HashMap<String, Metrics>,
+    /// Number of days covered by this cache.
+    pub period_days: u64,
+    /// Total number of history entries in the cache period.
+    pub entry_count: u64,
+}

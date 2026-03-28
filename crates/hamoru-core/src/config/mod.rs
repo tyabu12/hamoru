@@ -19,6 +19,20 @@ pub struct HamoruConfig {
     /// Default settings.
     #[serde(default)]
     pub defaults: Option<DefaultsConfig>,
+    /// Telemetry storage configuration.
+    #[serde(default)]
+    pub telemetry: Option<TelemetryConfig>,
+}
+
+impl HamoruConfig {
+    /// Returns the configured local telemetry database path, or the default.
+    pub fn telemetry_local_path(&self) -> &str {
+        self.telemetry
+            .as_ref()
+            .and_then(|t| t.local.as_ref())
+            .map(|l| l.path.as_str())
+            .unwrap_or(".hamoru/state.db")
+    }
 }
 
 /// Configuration for a single LLM provider.
@@ -82,6 +96,47 @@ pub struct DefaultsConfig {
     /// Default policy name.
     #[serde(default)]
     pub policy: Option<String>,
+}
+
+/// Telemetry storage configuration.
+#[derive(Debug, Default, Deserialize)]
+pub struct TelemetryConfig {
+    /// Local storage settings.
+    #[serde(default)]
+    pub local: Option<LocalTelemetryConfig>,
+    /// Remote storage settings (S3/R2).
+    #[serde(default)]
+    pub remote: Option<RemoteTelemetryConfig>,
+}
+
+/// Local telemetry storage configuration.
+#[derive(Debug, Deserialize)]
+pub struct LocalTelemetryConfig {
+    /// Path to the SQLite database file.
+    pub path: String,
+}
+
+/// Remote telemetry storage configuration.
+#[derive(Debug, Deserialize)]
+pub struct RemoteTelemetryConfig {
+    /// Remote storage backend.
+    pub backend: RemoteBackend,
+    /// Bucket name.
+    pub bucket: String,
+    /// AWS region or "auto".
+    #[serde(default)]
+    pub region: Option<String>,
+    /// Custom endpoint URL (for R2, MinIO, etc.).
+    #[serde(default)]
+    pub endpoint: Option<String>,
+}
+
+/// Supported remote storage backends.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RemoteBackend {
+    /// S3-compatible storage (AWS S3, Cloudflare R2, MinIO).
+    S3,
 }
 
 /// Loads and parses a `hamoru.yaml` configuration file.
@@ -258,5 +313,61 @@ providers:
                 std::env::set_var("HAMORU_ANTHROPIC_API_KEY", val);
             }
         }
+    }
+
+    #[test]
+    fn parse_config_with_telemetry() {
+        let yaml = r#"
+version: "1"
+providers:
+  - name: local
+    type: ollama
+telemetry:
+  local:
+    path: /tmp/custom.db
+  remote:
+    backend: s3
+    bucket: my-telemetry
+    region: us-east-1
+    endpoint: https://r2.example.com
+"#;
+        let config = parse_config(yaml).unwrap();
+        let telem = config.telemetry.as_ref().unwrap();
+        assert_eq!(telem.local.as_ref().unwrap().path, "/tmp/custom.db");
+        let remote = telem.remote.as_ref().unwrap();
+        assert_eq!(remote.backend, RemoteBackend::S3);
+        assert_eq!(remote.bucket, "my-telemetry");
+        assert_eq!(remote.region.as_deref(), Some("us-east-1"));
+        assert_eq!(remote.endpoint.as_deref(), Some("https://r2.example.com"));
+    }
+
+    #[test]
+    fn parse_config_without_telemetry() {
+        let yaml = r#"
+version: "1"
+providers:
+  - name: local
+    type: ollama
+"#;
+        let config = parse_config(yaml).unwrap();
+        assert!(config.telemetry.is_none());
+        assert_eq!(config.telemetry_local_path(), ".hamoru/state.db");
+    }
+
+    #[test]
+    fn parse_config_partial_telemetry() {
+        let yaml = r#"
+version: "1"
+providers:
+  - name: local
+    type: ollama
+telemetry:
+  local:
+    path: custom.db
+"#;
+        let config = parse_config(yaml).unwrap();
+        let telem = config.telemetry.as_ref().unwrap();
+        assert!(telem.remote.is_none());
+        assert_eq!(config.telemetry_local_path(), "custom.db");
     }
 }
