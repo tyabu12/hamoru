@@ -5,7 +5,10 @@
 //! based on constraints (cost, latency, quality) and preferences.
 
 pub mod config;
+pub mod engine;
 pub mod scoring;
+
+pub use engine::DefaultPolicyEngine;
 
 use std::time::Duration;
 
