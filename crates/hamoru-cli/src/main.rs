@@ -212,6 +212,21 @@ fn find_config_path() -> Result<PathBuf, HamoruError> {
     })
 }
 
+/// Searches for `hamoru.policy.yaml` in standard locations.
+fn find_policy_config_path() -> Result<PathBuf, HamoruError> {
+    for path in ["hamoru.policy.yaml", ".hamoru/hamoru.policy.yaml"] {
+        let p = PathBuf::from(path);
+        if p.exists() {
+            return Ok(p);
+        }
+    }
+    Err(HamoruError::ConfigError {
+        reason: "No hamoru.policy.yaml found. Run 'hamoru init' to create one, \
+                 or use -m provider:model for direct model selection."
+            .to_string(),
+    })
+}
+
 /// Loads config and builds a provider registry.
 fn load_and_build() -> Result<(HamoruConfig, ProviderRegistry), HamoruError> {
     let path = find_config_path()?;
@@ -328,8 +343,67 @@ async fn providers_test() -> Result<(), HamoruError> {
 // ---------------------------------------------------------------------------
 
 async fn run_prompt(args: RunArgs) -> Result<(), HamoruError> {
-    let (provider_id, model) = parse_model_spec(args.model.as_deref())?;
     let (_config, registry) = load_and_build()?;
+
+    // Resolve provider/model: direct (-m) or policy-based (-p / --tags)
+    let (provider_id, model, tags) = if let Some(ref model_spec) = args.model {
+        // Direct model mode (existing behavior)
+        let (pid, m) = parse_model_spec(Some(model_spec))?;
+        (pid, m, args.tags.clone())
+    } else if args.policy.is_some() || !args.tags.is_empty() {
+        // Policy mode
+        let policy_path = find_policy_config_path()?;
+        let policy_config =
+            hamoru_core::policy::config::load_policy_config(&policy_path)?;
+
+        // Pre-fetch models from all providers
+        let mut all_models = Vec::new();
+        for provider in registry.iter() {
+            match provider.list_models().await {
+                Ok(models) => all_models.extend(models),
+                Err(e) => {
+                    tracing::warn!(provider = provider.id(), "Failed to list models, skipping: {e}");
+                }
+            }
+        }
+
+        // Build routing request
+        let request = hamoru_core::policy::RoutingRequest {
+            tags: args.tags.clone(),
+            policy_name: args.policy.clone(),
+            ..Default::default()
+        };
+
+        // Load metrics cache for scoring
+        ensure_hamoru_dir().await?;
+        let store = create_telemetry_store().await?;
+        let period = Duration::from_secs(7 * 24 * 3600);
+        let metrics = store.query_detailed_metrics(period).await?;
+
+        let engine =
+            hamoru_core::policy::DefaultPolicyEngine::new(policy_config);
+        let selection =
+            hamoru_core::policy::PolicyEngine::select_model(
+                &engine, &request, &all_models, &metrics,
+            )?;
+
+        eprintln!(
+            "Selected: {}:{} (reason: {}, est. ${:.4})",
+            selection.provider,
+            selection.model,
+            selection.reason,
+            selection.estimated_cost.unwrap_or(0.0)
+        );
+
+        (selection.provider, selection.model, args.tags.clone())
+    } else {
+        return Err(HamoruError::ConfigError {
+            reason: "Specify -m provider:model, -p policy, or --tags tag1,tag2. \
+                     Run 'hamoru init' to create default configs."
+                .to_string(),
+        });
+    };
+
     let provider = registry
         .get(&provider_id)
         .ok_or_else(|| HamoruError::ConfigError {
@@ -360,7 +434,6 @@ async fn run_prompt(args: RunArgs) -> Result<(), HamoruError> {
             let chunk = chunk_result?;
             if !chunk.delta.is_empty() {
                 print!("{}", chunk.delta);
-                // Flush to show streaming output immediately
                 let _ = std::io::stdout().flush();
             }
             if chunk.usage.is_some() {
@@ -389,7 +462,7 @@ async fn run_prompt(args: RunArgs) -> Result<(), HamoruError> {
         cost,
         latency_ms,
         success: true,
-        tags: vec![],
+        tags,
     };
     telemetry.record(&entry).await?;
 
