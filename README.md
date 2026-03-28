@@ -2,10 +2,6 @@
 
 # 🎶 hamoru
 
-[![CI](https://github.com/tyabu12/hamoru/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tyabu12/hamoru/actions/workflows/ci.yml)
-[![Security Audit](https://github.com/tyabu12/hamoru/actions/workflows/security.yml/badge.svg?branch=main)](https://github.com/tyabu12/hamoru/actions/workflows/security.yml)
-[![coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/tyabu12/8c8891a593f77b776e5d672b8dd8ab2c/raw/hamoru-coverage.json)](https://gist.github.com/tyabu12/8c8891a593f77b776e5d672b8dd8ab2c)
-
 **"Terraform for LLMs."**
 
 Declaratively orchestrate multiple LLM providers in harmony,\
@@ -13,6 +9,10 @@ with policy-based model selection and cost impact prediction.
 
 *Named after Japanese ハモる (to harmonize)*\
 *— because your LLMs should sing together, not solo.*
+
+[![CI](https://github.com/tyabu12/hamoru/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tyabu12/hamoru/actions/workflows/ci.yml)
+[![Security Audit](https://github.com/tyabu12/hamoru/actions/workflows/security.yml/badge.svg?branch=main)](https://github.com/tyabu12/hamoru/actions/workflows/security.yml)
+[![coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/tyabu12/8c8891a593f77b776e5d672b8dd8ab2c/raw/hamoru-coverage.json)](https://gist.github.com/tyabu12/8c8891a593f77b776e5d672b8dd8ab2c)
 
 </div>
 

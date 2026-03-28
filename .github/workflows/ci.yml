@@ -11,12 +11,18 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  TARPAULIN_VERSION: "0.35.2"
 
 jobs:
   check:
     name: Check
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    outputs:
+      test-passed: ${{ steps.test.outputs.passed }}
+      test-failed: ${{ steps.test.outputs.failed }}
+      test-ignored: ${{ steps.test.outputs.ignored }}
+      test-parse-error: ${{ steps.test.outputs.parse_error }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -38,7 +44,29 @@ jobs:
         run: cargo build --all-targets
 
       - name: Test
-        run: cargo test --all-targets
+        id: test
+        run: |
+          OUTPUT=$(cargo test --all-targets 2>&1) || TEST_EXIT=$?
+          echo "$OUTPUT"
+
+          # Parse test results with awk (portable, sums across all workspace crates)
+          echo "$OUTPUT" | awk -F'[;.]' '/^test result:/ {
+            split($2, p, " "); passed += p[1]
+            split($3, f, " "); failed += f[1]
+            split($4, i, " "); ignored += i[1]
+          } END {
+            printf "passed=%d\nfailed=%d\nignored=%d\n", passed, failed, ignored
+          }' >> "$GITHUB_OUTPUT"
+
+          # Detect parse failure (zero test result lines = format may have changed)
+          RESULT_LINES=$(echo "$OUTPUT" | grep -c '^test result:' || true)
+          if [ "$RESULT_LINES" -eq 0 ]; then
+            echo "parse_error=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "parse_error=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          exit ${TEST_EXIT:-0}
 
   security:
     name: Security
@@ -60,6 +88,186 @@ jobs:
           command: check advisories
         continue-on-error: true
 
+  # SECURITY: pr-coverage runs untrusted PR code but has NO write permissions.
+  # The write token lives only in pr-comment, which never checks out code.
+  # Do NOT merge these jobs or add pull-requests: write here.
+  # Do NOT change the workflow trigger to pull_request_target — that would
+  # run fork code with elevated permissions and access to repository secrets.
+  pr-coverage:
+    name: PR Coverage
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: >-
+      !cancelled()
+      && github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Install cargo-tarpaulin
+        run: cargo install cargo-tarpaulin --version "$TARPAULIN_VERSION" --locked
+
+      - name: Run coverage
+        run: |
+          OUTPUT=$(cargo tarpaulin --workspace --out stdout 2>&1) || TARP_EXIT=$?
+          echo "$OUTPUT"
+          if [ "${TARP_EXIT:-0}" -ne 0 ]; then
+            echo "error" > coverage-pct.txt
+            exit 0
+          fi
+          PCT=$(echo "$OUTPUT" | grep -oP '^\d+\.\d+% coverage' | head -1 | grep -oP '^\d+\.\d+')
+          PCT=${PCT:-0.00}
+          if ! [[ "$PCT" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            PCT=0.00
+          fi
+          echo "$PCT" > coverage-pct.txt
+
+      - name: Upload coverage result
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pr-coverage
+          path: coverage-pct.txt
+          retention-days: 1
+
+  # SECURITY: Do NOT add actions/checkout or run untrusted code in this job.
+  # This job has pull-requests: write and must never execute PR code.
+  # Do NOT change the trigger to pull_request_target.
+  pr-comment:
+    name: PR Comment
+    needs: [check, pr-coverage]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: >-
+      !cancelled()
+      && github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Download coverage result
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        continue-on-error: true
+        with:
+          name: pr-coverage
+
+      - name: Read coverage percentage
+        id: cov
+        run: |
+          if [ -f coverage-pct.txt ]; then
+            COV=$(head -1 coverage-pct.txt 2>/dev/null | tr -d '[:space:]')
+          else
+            COV="error"
+          fi
+          if ! [[ "$COV" =~ ^[0-9]+\.[0-9]+$ ]] && [ "$COV" != "error" ]; then
+            COV="error"
+          fi
+          echo "pct=$COV" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch baseline coverage from main
+        id: baseline
+        run: |
+          GIST_URL="https://gist.githubusercontent.com/tyabu12/8c8891a593f77b776e5d672b8dd8ab2c/raw/hamoru-coverage.json"
+          RAW=$(curl --fail --silent --max-time 10 "$GIST_URL" 2>/dev/null || echo "")
+          BASELINE=""
+          if [ -n "$RAW" ]; then
+            BASELINE=$(echo "$RAW" | jq -r '.message // empty' | grep -oE '[0-9]+\.[0-9]+' || echo "")
+          fi
+          if [ -z "$BASELINE" ] || ! [[ "$BASELINE" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            BASELINE="N/A"
+          fi
+          echo "pct=$BASELINE" >> "$GITHUB_OUTPUT"
+
+      - name: Generate comment body
+        env:
+          CHECK_RESULT: ${{ needs.check.result }}
+          TEST_PASSED: ${{ needs.check.outputs.test-passed }}
+          TEST_FAILED: ${{ needs.check.outputs.test-failed }}
+          TEST_IGNORED: ${{ needs.check.outputs.test-ignored }}
+          TEST_PARSE_ERROR: ${{ needs.check.outputs.test-parse-error }}
+          PR_COV: ${{ steps.cov.outputs.pct }}
+          BASELINE_PCT: ${{ steps.baseline.outputs.pct }}
+          CI_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          {
+            echo "## CI Report"
+            echo ""
+
+            # Skipped / cancelled state — test step never ran
+            if [ "$CHECK_RESULT" = "skipped" ] || [ "$CHECK_RESULT" = "cancelled" ]; then
+              echo "> Check job was ${CHECK_RESULT}."
+            elif [ "$CHECK_RESULT" = "failure" ]; then
+              echo "> **Check job failed.** See [CI logs](${CI_RUN_URL}) for details."
+              echo ""
+            fi
+
+            # Test results (only when the test step actually ran)
+            if [ -n "$TEST_PARSE_ERROR" ]; then
+              if [ "$TEST_PARSE_ERROR" = "true" ]; then
+                echo "### Test Results"
+                echo ""
+                echo "> Could not parse test output. Format may have changed."
+              else
+                # Validate test counts are numeric
+                PASSED=$(echo "${TEST_PASSED:-0}" | grep -oE '^[0-9]+$' || echo "0")
+                FAILED=$(echo "${TEST_FAILED:-0}" | grep -oE '^[0-9]+$' || echo "0")
+                IGNORED=$(echo "${TEST_IGNORED:-0}" | grep -oE '^[0-9]+$' || echo "0")
+
+                echo "### Test Results"
+                echo ""
+                if [ "$FAILED" = "0" ]; then
+                  echo "**${PASSED} passed, ${IGNORED} ignored**"
+                else
+                  echo "**${PASSED} passed, ${FAILED} FAILED, ${IGNORED} ignored**"
+                fi
+              fi
+            fi
+
+            # Coverage with delta
+            echo ""
+            echo "### Coverage"
+            echo ""
+            if [ "$PR_COV" = "error" ]; then
+              echo "> Coverage measurement failed. See [CI logs](${CI_RUN_URL}) for details."
+            elif [ "$BASELINE_PCT" = "N/A" ]; then
+              echo "| This PR | \`main\` | Delta |"
+              echo "|---------|---------|-------|"
+              echo "| **${PR_COV}%** | N/A | — |"
+            else
+              DELTA=$(awk -v a="$PR_COV" -v b="$BASELINE_PCT" 'BEGIN {printf "%.2f", a - b}')
+              # Normalize -0.00 to 0.00 (awk floating point rounding)
+              [ "$DELTA" = "-0.00" ] && DELTA="0.00"
+              if [ "$(echo "$DELTA" | cut -c1)" = "-" ]; then
+                SIGN=""; EMOJI="📉"
+              elif [ "$DELTA" = "0.00" ]; then
+                SIGN=""; EMOJI="➡️"
+              else
+                SIGN="+"; EMOJI="📈"
+              fi
+              echo "| This PR | \`main\` | Delta |"
+              echo "|---------|---------|-------|"
+              echo "| **${PR_COV}%** | ${BASELINE_PCT}% | ${EMOJI} ${SIGN}${DELTA}% |"
+            fi
+
+            echo ""
+            echo "---"
+            echo "[View full CI run](${CI_RUN_URL})"
+          } > /tmp/pr-comment.md
+
+      - name: Post PR comment
+        uses: marocchino/sticky-pull-request-comment@70d2764d1a7d5d9560b100cbea0077fc8f633987 # v3.0.2
+        # Fork PRs have read-only GITHUB_TOKEN; comment posting will fail gracefully.
+        continue-on-error: true
+        with:
+          header: ci-report
+          path: /tmp/pr-comment.md
+
   coverage:
     name: Coverage
     needs: check
@@ -78,7 +286,7 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Install cargo-tarpaulin
-        run: cargo install cargo-tarpaulin --version 0.35.2 --locked
+        run: cargo install cargo-tarpaulin --version "$TARPAULIN_VERSION" --locked
 
       - name: Run coverage
         id: cov
@@ -86,9 +294,9 @@ jobs:
           OUTPUT=$(cargo tarpaulin --workspace --out stdout 2>&1)
           echo "$OUTPUT"
           PCT=$(echo "$OUTPUT" | grep -oP '^\d+\.\d+% coverage' | head -1 | grep -oP '^\d+\.\d+')
-          PCT=${PCT:-0}
+          PCT=${PCT:-0.00}
           if ! [[ "$PCT" =~ ^[0-9]+\.[0-9]+$ ]]; then
-            PCT=0
+            PCT=0.00
           fi
           echo "pct=$PCT" >> "$GITHUB_OUTPUT"
 
