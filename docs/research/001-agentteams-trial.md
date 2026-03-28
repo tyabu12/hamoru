@@ -8,13 +8,13 @@ to gather empirical input for Phase 6 (Agent Collaboration Engine) design.
 Primary design question: **Should Layer 5 compile collaboration patterns
 entirely into Layer 4 Workflows, or does it need an independent execution
 path?** (See design-plan.md Section 9.1.3, bullet 2; provisional `compile()`
-trait in Section 6.5.4)
+method in Section 6.5.4)
 
 ## Setup
 
 - Claude Code version: <!-- fill after trial -->
 - AgentTeams mode: <!-- in-process / split-pane -->
-- Number of Teammates: 2
+- Number of Teammates: <!-- fill after trial (expected: 2) -->
 - Task type: <!-- parallel-research / generator-evaluator -->
 - Task description: <!-- fill after trial -->
 - Trial date: <!-- YYYY-MM-DD -->
