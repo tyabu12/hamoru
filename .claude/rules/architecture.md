@@ -46,3 +46,12 @@ hamoru/
 - Provider-specific API types (e.g., Anthropic request/response structs) must NOT leak outside the `provider/` module
 - Each Provider implements the `LlmProvider` trait and exposes only shared types externally
 - Layer 5 compiles collaboration patterns into Layer 4 `Workflow` types and delegates execution. It must NOT have its own execution loop
+
+## hamoru-core Library Constraints
+
+hamoru-core is consumed by multiple frontends (CLI, API server, and potentially Tauri, Wasm). To maintain this flexibility:
+
+- **No CLI-specific dependencies**: hamoru-core must not depend on `clap`, `tracing-subscriber` (the crate), or other CLI/runtime-specific crates. The `tracing` facade crate (for emitting events/spans) is allowed; subscriber initialization is the consumer's responsibility
+- **No stdout/stderr output**: hamoru-core must not write to stdout/stderr. All output formatting is the consumer's responsibility
+- **Public types derive `Serialize`**: All public return types should derive `serde::Serialize` to support future JSON output, API responses, and structured logging. Existing Phase 0 skeleton types will be brought into compliance during their respective implementation phases
+- **Note** (Phase 5 decision pending): The `server/` module currently contains only trait and type definitions. The placement of axum HTTP framework implementation (in hamoru-cli or a dedicated crate) will be decided via ADR at Phase 5 start

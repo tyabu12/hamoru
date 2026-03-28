@@ -160,6 +160,17 @@ Credentials such as API keys are resolved in the following priority order (same 
 
 API keys must **never** be included in `hamoru.yaml` or workflow definitions. Configuration files contain only provider type and endpoint.
 
+**File Permission Requirements:**
+
+| Path | Mode | Rationale |
+|------|------|-----------|
+| `~/.hamoru/credentials.yaml` | 600 | API keys |
+| `.hamoru/` directory | 700 | Contains telemetry data with usage patterns |
+| `.hamoru/state.json` | 600 | Telemetry: provider names, model names, costs, timing |
+| `.hamoru/state.db` (Phase 2+) | 600 | SQLite telemetry with same sensitivity |
+
+Implementation: Use `std::os::unix::fs::OpenOptionsExt::mode()` for atomic permission setting at file creation, gated behind `#[cfg(unix)]`.
+
 ### 5.2 API Server Security (`hamoru serve`)
 
 - **API key authentication**: `Authorization: Bearer hamoru-xxx` header required
@@ -186,6 +197,21 @@ vec![
 Additional measures:
 - Warning logs when inter-step output contains system-instruction-like patterns
 - Future consideration for sandboxed evaluation steps
+
+### 5.4 Observability Security
+
+**Tracing and OTLP Export:**
+
+`ChatRequest`, `ChatResponse`, and types containing prompt/message content must never appear as tracing span attributes or log fields. This prevents prompt content leakage via OTLP export, log files, or `--debug` output. See CLAUDE.md Hard Rule 8 ("No prompt content in tracing").
+
+At `--debug` verbosity, HTTP headers are logged. `Authorization` and `x-api-key` headers must be stripped before entering the tracing pipeline — implemented via reqwest middleware or a sanitizing tracing layer, not developer discipline alone.
+
+**Error Sanitization:**
+
+Error types that wrap external errors (`ProviderRequestFailed`, `TelemetrySyncFailed`) use `source: Box<dyn std::error::Error + Send + Sync>`, whose `Display` output may contain URLs with credentials or response bodies echoing secrets. Since `Box<dyn Error>` has a sealed `Display` impl, sanitization must happen **before** boxing:
+
+- `sanitize_error()` in `error.rs`: strips URL query parameters and response body credential patterns before wrapping into `Box<dyn Error>` (e.g., via a `SanitizedError(String)` newtype)
+- `MidWorkflowFailure.partial_results`: `StepResult.output` contains full LLM response text. A custom `Debug` impl should display only metadata (step name, tokens, cost), not the output content
 
 ## 6. Layer Design Detail
 
@@ -1551,6 +1577,9 @@ On error, clearly communicate "what happened" and "what the user should do."
 - OS keychain integration (macOS Keychain / Linux Secret Service)
 - Streaming output for workflow intermediate steps
 - TensorZero-compatible feedback API (complementing statistical optimization)
+- Observability: OTLP export via `tracing-opentelemetry` (Phase 2, feature flag `telemetry-otlp` in hamoru-cli) → self-hosted dashboard (Phase 5+, reads SQLite read-only)
+- IDE Integration: JSON Schema generation for YAML config files (`schemars` crate — note: `ModelEntry`'s `#[serde(untagged)]` has known compatibility issues with schemars)
+- Config validation CLI: `hamoru validate` (YAML schema check + provider reachability verification)
 
 ## 13. Success Metrics
 

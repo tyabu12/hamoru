@@ -54,6 +54,8 @@ Avoid adding dependencies beyond this list without explicit justification and us
 5. **No new dependencies without user confirmation** — See Technology Stack above.
 6. **Doc comments on public functions** — `#[warn(missing_docs)]` from Phase 0 (skeletons/provisional traits are exempt). Escalate to `#[deny(missing_docs)]` from Phase 1 onward when real implementations begin.
 7. **No code without tests** — TDD is mandatory from Phase 1 onward. Phase 0 (skeletons, empty trait impls, error type definitions) is exempt — completion criteria is compile + clippy clean. See Quality & Engineering Principles.
+8. **No prompt content in tracing** — `ChatRequest`, `ChatResponse`, and types containing prompt/message content must never appear as tracing span attributes or log fields. This prevents prompt leakage via OTLP export, log files, or `--debug` output. Complements Rule 2 (credentials); this rule protects prompt content. Concrete `#[instrument]` patterns are in `.claude/rules/provider.md`.
+9. **No display logic in hamoru-core** — hamoru-core must not write directly to stdout/stderr or contain CLI-specific presentation logic. The core crate returns structured data; presentation is the CLI/UI layer's responsibility. `Display`/`Debug` trait implementations (including `thiserror` `#[error(...)]`) are permitted — these are data type contracts, not presentation logic. See `.claude/rules/architecture.md` Layer Boundary Rules for related constraints (dependencies, subscriber initialization, `Serialize` derive).
 
 ## Quality & Engineering Principles
 

@@ -30,6 +30,11 @@ Are provider-specific API types leaking outside `provider/`?
 - Anthropic/OpenAI/Ollama request/response structs must stay in their respective files
 - Cross-layer communication uses only shared types from `provider/types.rs`
 
+Is hamoru-core's library independence maintained?
+- No `println!`/`eprintln!` direct usage in hamoru-core (stdout/stderr output belongs in CLI layer)
+- No `tracing-subscriber` crate dependency in hamoru-core (subscriber initialization is the consumer's responsibility)
+- No CLI-specific formatting logic in hamoru-core (human-readable output formatting belongs in CLI layer)
+
 ### 3. Error Handling
 
 - `unwrap()` is forbidden (Hard Rule 1). `expect()` only in test code.
@@ -48,6 +53,9 @@ Are provider-specific API types leaking outside `provider/`?
 - Credentials come from environment variables only.
 - `{previous_output}` is never injected into System role messages.
 - Provider structs with credentials have manual `Debug` impl (redacted).
+- HTTP header log output masks credentials (`Authorization`, `x-api-key` headers stripped before logging).
+- Error type `Display`/`Debug` output does not expose prompt content or URL credentials (especially `MidWorkflowFailure.partial_results`).
+- Tracing-specific prompt leakage checks are in Checkpoint 12.
 
 ### 6. Rust Quality
 
@@ -88,6 +96,15 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --all --check
 ```
 
+### 12. Tracing Hygiene
+
+Applicable when `tracing` crate is present in `hamoru-core/Cargo.toml`. Otherwise report N/A.
+
+- Functions using `#[instrument]` that accept `ChatRequest`, `ChatResponse`, or types containing prompt content: are those parameters skipped (`skip_all` or explicit skip)? This enforces the "No prompt content in tracing" Hard Rule. Provider-specific patterns are in `.claude/rules/provider.md`.
+- Is tracing subscriber initialization (the runtime concept) absent from hamoru-core? Subscriber setup belongs in consumer crates (CLI, API server).
+- Streaming methods (`chat_stream`): no per-chunk span creation? (`trace!()` events within an existing span are fine.)
+- Are span attribute names defined as constants rather than inline string literals?
+
 ## Output Format
 
 ```
@@ -106,6 +123,7 @@ cargo fmt --all --check
 | 9. Why Comments | PASS/WARN/FAIL | ... |
 | 10. Runtime Token Efficiency | PASS/WARN/FAIL | ... |
 | 11. Build | PASS/WARN/FAIL | ... |
+| 12. Tracing Hygiene | PASS/WARN/FAIL/N/A | ... |
 
 ### Issues Found
 (Detail any WARN or FAIL items)

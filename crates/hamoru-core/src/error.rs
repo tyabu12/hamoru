@@ -10,6 +10,9 @@ use crate::provider::types::TokenUsage;
 /// Defined here (rather than in `orchestrator/`) because `HamoruError::MidWorkflowFailure`
 /// references it, and placing it in `orchestrator/` would create a circular dependency.
 // TODO: Consider moving to a shared `types` module if more cross-cutting types emerge.
+// TODO: Add `Serialize` derive in Phase 1 (architecture.md library constraint).
+// TODO(Phase 4): Replace derived `Debug` with a custom impl that omits `output` field
+//   to prevent LLM response content leaking via error Display/Debug. See design-plan.md §5.4.
 #[derive(Debug, Clone)]
 pub struct StepResult {
     /// Name of the step that was executed.
