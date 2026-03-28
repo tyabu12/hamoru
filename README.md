@@ -20,7 +20,7 @@ with policy-based model selection and cost impact prediction.
 >
 > Use at your own risk. APIs and configuration formats may change without notice.
 
-## 🚧 Current Phase
+## 🎯 Current Phase
 
 **Phase 4a: Orchestration Engine — Sequential**
 
