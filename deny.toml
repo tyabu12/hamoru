@@ -47,9 +47,11 @@ deny = [
     { crate = "openssl-sys", reason = "hamoru uses rustls-tls; openssl is not allowed" },
 ]
 
-# Known acceptable duplicates (verified 2026-03-28 via `cargo deny check bans`).
-# ring 0.17 pulls windows-sys 0.52; the rest of the ecosystem uses 0.61.
+# Known acceptable duplicates (verified 2026-03-29 via `cargo deny check bans`).
+# ring 0.17 pins getrandom 0.2 and windows-sys 0.52; the rest of the ecosystem
+# has moved to getrandom 0.3+ and windows-sys 0.61. Both resolve when ring updates.
 skip = [
+    { crate = "getrandom@0.2.17", reason = "transitive dep of ring 0.17; resolves when ring updates" },
     { crate = "windows-sys@0.52.0", reason = "transitive dep of ring 0.17; resolves when ring updates" },
 ]
 
