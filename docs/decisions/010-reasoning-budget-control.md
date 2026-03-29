@@ -2,9 +2,9 @@
 
 ## Status
 
-Proposed
+Proposed (2026-03)
 
-**Staleness policy**: Update to Accepted when Phase A implementation begins. Re-evaluate if 6 months pass without starting.
+**Staleness policy**: Update to Accepted when Phase A implementation begins. Re-evaluate if 6 months pass without starting (by 2026-09).
 
 ## Context
 
@@ -69,7 +69,8 @@ Phase A is the primary scope of this ADR. It establishes reasoning token trackin
 
 **Thinking content is prompt-equivalent data** (Rule 8 extension):
 - Thinking/reasoning text must never appear in telemetry, tracing spans, or log fields. Only token counts cross the provider boundary
-- Provider adapter error handling must not capture thinking content in raw response bodies within error variants. Extend existing `sanitize_error()` pattern
+- Streaming parsers must skip/discard `thinking` type content blocks in SSE events. Only `text` type blocks contribute to `ChatChunk.delta`. This applies to both Anthropic's `content_block_delta` events and any future provider's streaming format
+- Provider adapter error handling must not capture thinking content in raw response bodies within error variants. Ensure error paths never include raw response bodies when thinking blocks may be present (extend existing `sanitize_error()` pattern with content-aware stripping)
 
 **Prerequisite — custom `Debug` impls**:
 - `ChatResponse` and `ChatRequest` currently use `#[derive(Debug)]`, exposing message content in debug output. Before Phase A begins, add custom `Debug` impls that redact `content` (following the `StepResult` pattern in `error.rs`). This is a pre-existing defense-in-depth gap independent of reasoning budget
