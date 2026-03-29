@@ -7,5 +7,6 @@
 //! - [`types`]: OpenAI wire format request/response serde types
 //! - [`translate`]: Conversion between OpenAI wire format and internal types
 
+pub mod namespace;
 pub mod translate;
 pub mod types;
