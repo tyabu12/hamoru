@@ -3,6 +3,9 @@
 //! Routes requests through hamoru's provider/policy/orchestration layers
 //! and returns responses in the OpenAI wire format.
 
+pub mod auth;
+pub mod rate_limit;
+
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -15,8 +18,9 @@ use axum::{
 };
 use chrono::Utc;
 use futures::StreamExt;
+use futures::future::join_all;
 use hamoru_core::error::HamoruError;
-use hamoru_core::policy::DefaultPolicyEngine;
+use hamoru_core::policy::{DefaultPolicyEngine, PolicyEngine};
 use hamoru_core::provider::ProviderRegistry;
 use hamoru_core::provider::types::ChatRequest;
 use hamoru_core::server::namespace::{ModelTarget, parse_model_target};
@@ -25,12 +29,16 @@ use hamoru_core::server::types::{
     OaiChatChunk, OaiChatRequest, OaiChatResponse, OaiChoice, OaiChunkChoice, OaiChunkDelta,
     OaiErrorBody, OaiErrorResponse, OaiResponseMessage, OaiUsage,
 };
-use hamoru_core::telemetry::{HistoryEntry, TelemetryStore};
+use hamoru_core::telemetry::{HistoryEntry, MetricsCache, TelemetryStore};
 use serde_json::json;
 use tokio_stream::wrappers::ReceiverStream;
 
 /// TTL for the cached `/v1/models` response (60 seconds).
 const MODELS_CACHE_TTL: Duration = Duration::from_secs(60);
+
+/// TTL for the cached metrics data (30 seconds).
+#[allow(dead_code)] // Wired in commit 7 (middleware ordering)
+const METRICS_CACHE_TTL: Duration = Duration::from_secs(30);
 
 /// Shared application state for all handlers.
 pub struct AppState {
@@ -42,10 +50,16 @@ pub struct AppState {
     pub telemetry: Box<dyn TelemetryStore>,
     /// Cached `/v1/models` response with TTL to avoid per-request provider calls.
     models_cache: tokio::sync::RwLock<Option<(Instant, serde_json::Value)>>,
+    /// Cached metrics for cost/policy scoring (D4).
+    metrics_cache: tokio::sync::RwLock<Option<(Instant, MetricsCache)>>,
+    /// Global daily cost tracker: (date, accumulated_cost) with midnight reset (D12).
+    /// Used by cost guardrail checks in the request path.
+    #[allow(dead_code)] // Wired when cost checking is integrated into the handler
+    daily_cost: tokio::sync::RwLock<(chrono::NaiveDate, f64)>,
 }
 
 impl AppState {
-    /// Creates a new `AppState` with empty models cache.
+    /// Creates a new `AppState` with empty caches.
     pub fn new(
         providers: ProviderRegistry,
         policy_engine: DefaultPolicyEngine,
@@ -56,18 +70,147 @@ impl AppState {
             policy_engine,
             telemetry,
             models_cache: tokio::sync::RwLock::new(None),
+            metrics_cache: tokio::sync::RwLock::new(None),
+            daily_cost: tokio::sync::RwLock::new((chrono::Utc::now().date_naive(), 0.0)),
         }
+    }
+
+    /// Returns a cached `MetricsCache` or refreshes from telemetry (30s TTL).
+    async fn get_metrics_cache(&self) -> MetricsCache {
+        {
+            let cache = self.metrics_cache.read().await;
+            if let Some((cached_at, ref metrics)) = *cache
+                && cached_at.elapsed() < METRICS_CACHE_TTL
+            {
+                return metrics.clone();
+            }
+        }
+        // Cache miss — refresh with timeout
+        let metrics = tokio::time::timeout(
+            Duration::from_secs(5),
+            self.telemetry
+                .query_detailed_metrics(Duration::from_secs(7 * 86400)),
+        )
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .unwrap_or_default();
+
+        let mut cache = self.metrics_cache.write().await;
+        *cache = Some((Instant::now(), metrics.clone()));
+        metrics
+    }
+
+    /// Checks and accumulates daily cost. Resets at midnight boundary (D12).
+    ///
+    /// Returns `Ok(())` if within limits, or `Err(HamoruError::CostLimitExceeded)`.
+    #[allow(dead_code)] // Integration pending: will be called in handler before provider.chat()
+    async fn check_and_accumulate_cost(
+        &self,
+        estimated_cost: f64,
+        max_per_day: Option<f64>,
+    ) -> Result<(), HamoruError> {
+        let mut tracker = self.daily_cost.write().await;
+        let today = chrono::Utc::now().date_naive();
+
+        // Reset on date boundary
+        if tracker.0 != today {
+            *tracker = (today, 0.0);
+        }
+
+        if let Some(limit) = max_per_day {
+            let new_total = tracker.1 + estimated_cost;
+            if new_total > limit {
+                return Err(HamoruError::CostLimitExceeded {
+                    limit: "per_day".to_string(),
+                    current: tracker.1,
+                    max: limit,
+                });
+            }
+        }
+
+        tracker.1 += estimated_cost;
+        Ok(())
+    }
+
+    /// Adjusts the daily cost tracker when actual cost differs from estimate.
+    #[allow(dead_code)] // Integration pending: will be called after actual cost is known
+    async fn adjust_daily_cost(&self, delta: f64) {
+        let mut tracker = self.daily_cost.write().await;
+        tracker.1 = (tracker.1 + delta).max(0.0);
     }
 }
 
-/// Build the axum Router with all API routes.
-// TODO(Phase 5b): Add DefaultBodyLimit::max() layer for explicit request size control
-// TODO(Phase 5b): Add tower::timeout::Timeout layer for non-streaming request timeout
-pub fn build_router(state: Arc<AppState>) -> Router {
+#[allow(dead_code)] // Wired in commit 7
+/// Estimates the cost of a request based on OAI message content byte length.
+///
+/// Uses byte_length / 3.0 for input tokens (conservative for CJK/multilingual, D4)
+/// and max_tokens (or 2000 default) for output tokens.
+fn estimate_request_cost(
+    oai_messages: &[hamoru_core::server::types::OaiMessage],
+    max_tokens: Option<u32>,
+    model_info: &hamoru_core::provider::types::ModelInfo,
+) -> f64 {
+    let input_bytes: usize = oai_messages
+        .iter()
+        .map(|m| m.content.as_ref().map(|c| c.len()).unwrap_or(0))
+        .sum();
+    let estimated_input_tokens = (input_bytes as f64 / 3.0).ceil() as u64;
+    let estimated_output_tokens = u64::from(max_tokens.unwrap_or(2000));
+
+    estimated_input_tokens as f64 * model_info.cost_per_input_token
+        + estimated_output_tokens as f64 * model_info.cost_per_output_token
+}
+
+/// Build the axum Router with all API routes and middleware stack.
+///
+/// Middleware ordering (axum layers execute bottom-up):
+/// 1. Auth (first to execute — reject unknown callers ASAP)
+/// 2. Rate Limit (second — reject burst traffic before body parsing)
+/// 3. Body Limit (third — reject oversized payloads)
+/// 4. Handler (last — execute business logic)
+pub fn build_router(
+    state: Arc<AppState>,
+    api_keys: Arc<Vec<String>>,
+    rate_limiter: Arc<rate_limit::RateLimiter>,
+    max_body_bytes: usize,
+) -> Router {
     Router::new()
         .route("/v1/models", get(list_models))
         .route("/v1/chat/completions", post(chat_completions))
         .with_state(state)
+        // Layer ordering: bottom-up execution (last added = first executed)
+        .layer(axum::extract::DefaultBodyLimit::max(max_body_bytes))
+        .layer(axum::middleware::from_fn_with_state(
+            rate_limiter,
+            rate_limit_middleware,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            api_keys,
+            auth::auth_middleware,
+        ))
+}
+
+/// Rate limiting middleware — checks the token bucket for the caller's key.
+async fn rate_limit_middleware(
+    State(limiter): State<Arc<rate_limit::RateLimiter>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Result<Response, Response> {
+    // Use auth identity if available, otherwise global key
+    let key = request
+        .extensions()
+        .get::<auth::AuthIdentity>()
+        .map(|id| id.0.clone())
+        .unwrap_or_else(|| rate_limit::GLOBAL_KEY.to_string());
+
+    match limiter.check(&key) {
+        Ok(()) => Ok(next.run(request).await),
+        Err(retry_after) => Err(ApiError(HamoruError::RateLimitExceeded {
+            retry_after_secs: retry_after,
+        })
+        .into_response()),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -145,9 +288,13 @@ async fn list_models(
 /// Handles chat completion requests (non-streaming and streaming).
 async fn chat_completions(
     State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<OaiChatRequest>,
 ) -> Result<Response, ApiError> {
     let target = parse_model_target(&req.model)?;
+
+    // Extract tags for policy routing (from header and/or body)
+    let tags = extract_tags(&headers, &req);
 
     // Translate messages
     let messages: Vec<_> = req
@@ -166,8 +313,8 @@ async fn chat_completions(
         .map(translate::oai_tool_choice_to_internal)
         .transpose()?;
 
-    // Resolve provider and model based on target
-    let (provider_id, model_id) = resolve_target(&target, &state)?;
+    // Resolve provider and model based on target (async for policy routing)
+    let (provider_id, model_id) = resolve_target(&target, &state, tags).await?;
 
     let provider =
         state
@@ -223,65 +370,87 @@ async fn chat_completions(
         let first_data = serde_json::to_string(&first_chunk).unwrap_or_default();
         let _ = tx.send(Ok(Event::default().data(first_data))).await;
 
-        // Spawn stream consumer task
+        // Spawn stream consumer task with hybrid timeout (D8):
+        //   - Per-chunk stall: 30s max between consecutive chunks
+        //   - Total duration: 300s max for the entire stream
         // Safety: telemetry is behind Arc (AppState is Arc'd), so we clone the Arc
         let state_clone = Arc::clone(&state);
+        let stall_timeout = Duration::from_secs(30);
+        let max_duration = Duration::from_secs(300);
         tokio::spawn(async move {
             let start = Instant::now();
             let mut stream = std::pin::pin!(stream);
             let mut final_usage = None;
 
-            // TODO(Phase 5b): Wrap stream.next() with tokio::time::timeout to prevent
-            // indefinitely hanging connections when a provider stream stalls.
-            while let Some(chunk_result) = stream.next().await {
-                match chunk_result {
-                    Ok(chunk) => {
-                        // Capture final usage for telemetry
-                        if chunk.usage.is_some() {
-                            final_usage = chunk.usage.clone();
-                        }
+            loop {
+                // Check total stream duration
+                if start.elapsed() > max_duration {
+                    tracing::warn!("Stream exceeded max duration ({max_duration:?}), terminating");
+                    break;
+                }
 
-                        let oai_chunk = OaiChatChunk {
-                            id: response_id.clone(),
-                            object: "chat.completion.chunk".to_string(),
-                            created,
-                            model: model_label.clone(),
-                            choices: vec![OaiChunkChoice {
-                                index: 0,
-                                delta: OaiChunkDelta {
-                                    role: None,
-                                    content: if chunk.delta.is_empty() {
-                                        None
-                                    } else {
-                                        Some(chunk.delta)
-                                    },
-                                    tool_calls: chunk
-                                        .tool_calls
-                                        .as_ref()
-                                        .map(|tcs| translate::tool_calls_to_oai(tcs)),
-                                },
-                                finish_reason: chunk
-                                    .finish_reason
-                                    .as_ref()
-                                    .map(|fr| translate::finish_reason_to_oai(fr).to_string()),
-                            }],
-                            usage: chunk.usage.as_ref().map(|u| OaiUsage {
-                                prompt_tokens: u.input_tokens,
-                                completion_tokens: u.output_tokens,
-                                total_tokens: u.input_tokens + u.output_tokens,
-                            }),
-                            hamoru: None,
-                        };
+                // Hybrid: per-chunk stall timeout + client disconnect detection
+                tokio::select! {
+                    chunk_result = tokio::time::timeout(stall_timeout, stream.next()) => {
+                        match chunk_result {
+                            Ok(Some(Ok(chunk))) => {
+                                // Capture final usage for telemetry
+                                if chunk.usage.is_some() {
+                                    final_usage = chunk.usage.clone();
+                                }
 
-                        // TODO: unwrap_or_default silently swallows serialization errors
-                        let data = serde_json::to_string(&oai_chunk).unwrap_or_default();
-                        if tx.send(Ok(Event::default().data(data))).await.is_err() {
-                            break; // Client disconnected
+                                let oai_chunk = OaiChatChunk {
+                                    id: response_id.clone(),
+                                    object: "chat.completion.chunk".to_string(),
+                                    created,
+                                    model: model_label.clone(),
+                                    choices: vec![OaiChunkChoice {
+                                        index: 0,
+                                        delta: OaiChunkDelta {
+                                            role: None,
+                                            content: if chunk.delta.is_empty() {
+                                                None
+                                            } else {
+                                                Some(chunk.delta)
+                                            },
+                                            tool_calls: chunk
+                                                .tool_calls
+                                                .as_ref()
+                                                .map(|tcs| translate::tool_calls_to_oai(tcs)),
+                                        },
+                                        finish_reason: chunk
+                                            .finish_reason
+                                            .as_ref()
+                                            .map(|fr| translate::finish_reason_to_oai(fr).to_string()),
+                                    }],
+                                    usage: chunk.usage.as_ref().map(|u| OaiUsage {
+                                        prompt_tokens: u.input_tokens,
+                                        completion_tokens: u.output_tokens,
+                                        total_tokens: u.input_tokens + u.output_tokens,
+                                    }),
+                                    hamoru: None,
+                                };
+
+                                let data = serde_json::to_string(&oai_chunk).unwrap_or_default();
+                                if tx.send(Ok(Event::default().data(data))).await.is_err() {
+                                    tracing::info!("Client disconnected during stream");
+                                    return; // Client gone, skip telemetry
+                                }
+                            }
+                            Ok(Some(Err(e))) => {
+                                tracing::warn!("Stream error: {e}");
+                                break;
+                            }
+                            Ok(None) => break, // Stream ended normally
+                            Err(_) => {
+                                tracing::warn!("Stream stalled for {stall_timeout:?}, terminating");
+                                break;
+                            }
                         }
                     }
-                    Err(e) => {
-                        tracing::warn!("Stream error: {e}");
-                        break;
+                    _ = tx.closed() => {
+                        tracing::info!("Client disconnected, terminating stream");
+                        return; // Client gone, skip telemetry
                     }
                 }
             }
@@ -301,6 +470,7 @@ async fn chat_completions(
                     latency_ms,
                     success: true,
                     tags: vec![],
+                    request_id: None,
                 };
                 if let Err(e) = state_clone.telemetry.record(&entry).await {
                     tracing::warn!("Failed to record telemetry: {e}");
@@ -376,6 +546,7 @@ async fn chat_completions(
                 latency_ms,
                 success: true,
                 tags: vec![],
+                request_id: None,
             };
             if let Err(e) = state_clone.telemetry.record(&entry).await {
                 tracing::warn!("Failed to record telemetry: {e}");
@@ -389,25 +560,37 @@ async fn chat_completions(
 /// Resolve a `ModelTarget` into (provider_id, model_id).
 ///
 /// For direct targets, returns the provider and model from the namespace.
-/// For policy targets, runs model selection via the policy engine.
-fn resolve_target(
+/// For policy targets, collects models from all providers (reusing
+/// models_cache with TTL) and delegates to the policy engine.
+async fn resolve_target(
     target: &ModelTarget,
-    _state: &AppState,
+    state: &AppState,
+    tags: Vec<String>,
 ) -> Result<(String, String), HamoruError> {
     match target {
         ModelTarget::Direct { provider, model } => Ok((provider.clone(), model.clone())),
         ModelTarget::Policy { policy_name } => {
-            // Collect all available models from all providers
-            // For now, use a synchronous approach: we need model info for selection.
-            // In a real async flow, we'd pre-load this. For correctness, use
-            // the first provider's models as the candidate set.
-            // TODO: collect from all providers asynchronously in a future optimization
-            Err(HamoruError::ConfigError {
-                reason: format!(
-                    "Policy-based routing (hamoru:{policy_name}) requires async model collection. \
-                     Use direct provider:model format for now."
-                ),
-            })
+            // Collect all models from all providers (parallel, cached)
+            let all_models = collect_all_models(state).await?;
+
+            // Build routing request with tags and explicit policy name
+            let routing_request = hamoru_core::policy::RoutingRequest {
+                tags,
+                policy_name: Some(policy_name.clone()),
+                estimated_input_tokens: None,
+                estimated_output_tokens: None,
+            };
+
+            // Load metrics for scoring
+            let metrics = state.get_metrics_cache().await;
+
+            // Select model via policy engine
+            let selection =
+                state
+                    .policy_engine
+                    .select_model(&routing_request, &all_models, &metrics)?;
+
+            Ok((selection.provider, selection.model))
         }
         ModelTarget::Workflow { workflow_name } => Err(HamoruError::ConfigError {
             reason: format!(
@@ -420,6 +603,49 @@ fn resolve_target(
             ),
         }),
     }
+}
+
+/// Collects models from all providers, with graceful degradation on failure.
+async fn collect_all_models(
+    state: &AppState,
+) -> Result<Vec<hamoru_core::provider::types::ModelInfo>, HamoruError> {
+    let futs: Vec<_> = state.providers.iter().map(|p| p.list_models()).collect();
+    let results = join_all(futs).await;
+
+    let mut all_models = Vec::new();
+    for result in results {
+        match result {
+            Ok(models) => all_models.extend(models),
+            Err(e) => tracing::warn!("Failed to list models from a provider, skipping: {e}"),
+        }
+    }
+    Ok(all_models)
+}
+
+/// Extracts hamoru tags from the `X-Hamoru-Tags` header and/or request body.
+///
+/// When both sources provide tags, merges them (union, deduplicated).
+fn extract_tags(headers: &axum::http::HeaderMap, _req: &OaiChatRequest) -> Vec<String> {
+    let mut tags = Vec::new();
+
+    // Source 1: X-Hamoru-Tags header (comma-separated)
+    if let Some(header_val) = headers.get("x-hamoru-tags")
+        && let Ok(val) = header_val.to_str()
+    {
+        tags.extend(
+            val.split(',')
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty()),
+        );
+    }
+
+    // Source 2: extra_body.hamoru_tags (via serde(flatten) — future commit)
+    // Currently no extra field on OaiChatRequest; will be added in a later commit.
+
+    // Deduplicate while preserving order
+    let mut seen = std::collections::HashSet::new();
+    tags.retain(|t| seen.insert(t.clone()));
+    tags
 }
 
 // ---------------------------------------------------------------------------
@@ -438,17 +664,35 @@ impl From<HamoruError> for ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, error_type, code) = classify_error(&self.0);
-        // TODO(Phase 5b): For the catch-all 500 case, consider returning a generic
-        // "Internal server error" message instead of self.0.to_string() to avoid
-        // leaking internal implementation details to API clients.
+
+        // Sanitize: 5xx errors get a generic message to prevent leaking
+        // internal details (provider names, SQL errors, etc.).
+        // 4xx errors are safe — they contain user-actionable guidance.
+        let message = if status.is_server_error() {
+            tracing::error!(error = %self.0, "Server error");
+            "Internal server error. Please try again later.".to_string()
+        } else {
+            self.0.to_string()
+        };
+
         let body = OaiErrorResponse {
             error: OaiErrorBody {
-                message: self.0.to_string(),
+                message,
                 error_type: error_type.to_string(),
                 code: code.map(|c| c.to_string()),
             },
         };
-        (status, Json(body)).into_response()
+
+        let mut response = (status, Json(body)).into_response();
+
+        // Add Retry-After header for rate limit errors
+        if let HamoruError::RateLimitExceeded { retry_after_secs } = &self.0
+            && let Ok(val) = axum::http::HeaderValue::from_str(&retry_after_secs.to_string())
+        {
+            response.headers_mut().insert("retry-after", val);
+        }
+
+        response
     }
 }
 
@@ -485,6 +729,16 @@ fn classify_error(err: &HamoruError) -> (StatusCode, &'static str, Option<&'stat
             "server_error",
             Some("provider_request_failed"),
         ),
+        HamoruError::Unauthorized { .. } => (
+            StatusCode::UNAUTHORIZED,
+            "authentication_error",
+            Some("invalid_api_key"),
+        ),
+        HamoruError::RateLimitExceeded { .. } => (
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limit_error",
+            Some("rate_limit_exceeded"),
+        ),
         HamoruError::ConfigError { .. } => (StatusCode::BAD_REQUEST, "invalid_request_error", None),
         _ => (StatusCode::INTERNAL_SERVER_ERROR, "server_error", None),
     }
@@ -502,6 +756,16 @@ mod tests {
     use hamoru_core::provider::types::ModelInfo;
     use hamoru_core::telemetry::memory::InMemoryTelemetryStore;
     use tower::ServiceExt;
+
+    /// Builds a test router with no auth and generous limits.
+    fn test_router(state: Arc<AppState>) -> Router {
+        build_router(
+            state,
+            Arc::new(Vec::new()), // no auth
+            Arc::new(rate_limit::RateLimiter::new(1000)),
+            10 * 1024 * 1024, // 10MB
+        )
+    }
 
     fn test_state(models: Vec<ModelInfo>) -> Arc<AppState> {
         let mut provider = MockProvider::new("test-provider");
@@ -542,7 +806,7 @@ mod tests {
     #[tokio::test]
     async fn list_models_returns_provider_and_policy_models() {
         let state = test_state(vec![sample_model()]);
-        let app = build_router(state);
+        let app = test_router(state);
 
         let req = Request::builder()
             .uri("/v1/models")
@@ -574,7 +838,7 @@ mod tests {
     #[tokio::test]
     async fn list_models_empty_providers() {
         let state = test_state(vec![]);
-        let app = build_router(state);
+        let app = test_router(state);
 
         let req = Request::builder()
             .uri("/v1/models")
@@ -643,7 +907,7 @@ mod tests {
     #[tokio::test]
     async fn unknown_route_returns_404() {
         let state = test_state(vec![]);
-        let app = build_router(state);
+        let app = test_router(state);
 
         let req = Request::builder()
             .uri("/v1/nonexistent")
@@ -699,7 +963,7 @@ mod tests {
     #[tokio::test]
     async fn chat_completions_non_streaming_direct_model() {
         let state = test_state_with_response(vec![sample_model()], sample_chat_response());
-        let app = build_router(state);
+        let app = test_router(state);
 
         let body = serde_json::json!({
             "model": "test-provider:test-model",
@@ -746,7 +1010,7 @@ mod tests {
             }]),
         };
         let state = test_state_with_response(vec![sample_model()], tool_response);
-        let app = build_router(state);
+        let app = test_router(state);
 
         let body = serde_json::json!({
             "model": "test-provider:test-model",
@@ -783,7 +1047,7 @@ mod tests {
     #[tokio::test]
     async fn chat_completions_invalid_model_returns_404() {
         let state = test_state(vec![sample_model()]);
-        let app = build_router(state);
+        let app = test_router(state);
 
         let body = serde_json::json!({
             "model": "nonexistent:model",
@@ -845,7 +1109,7 @@ mod tests {
             DefaultPolicyEngine::new(policy_config),
             Box::new(InMemoryTelemetryStore::new()),
         ));
-        let app = build_router(state);
+        let app = test_router(state);
 
         let body = serde_json::json!({
             "model": "test-provider:test-model",
@@ -907,5 +1171,78 @@ mod tests {
         // First data line should have role
         let first: serde_json::Value = serde_json::from_str(data_lines[0]).unwrap();
         assert_eq!(first["choices"][0]["delta"]["role"], "assistant");
+    }
+
+    #[test]
+    fn classify_error_unauthorized_returns_401() {
+        let err = HamoruError::Unauthorized {
+            reason: "invalid API key".to_string(),
+        };
+        let (status, error_type, code) = classify_error(&err);
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(error_type, "authentication_error");
+        assert_eq!(code, Some("invalid_api_key"));
+    }
+
+    #[test]
+    fn classify_error_rate_limit_returns_429() {
+        let err = HamoruError::RateLimitExceeded {
+            retry_after_secs: 5,
+        };
+        let (status, error_type, code) = classify_error(&err);
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(error_type, "rate_limit_error");
+        assert_eq!(code, Some("rate_limit_exceeded"));
+    }
+
+    #[test]
+    fn api_error_5xx_does_not_leak_details() {
+        let err = ApiError(HamoruError::ProviderUnavailable {
+            provider: "anthropic".to_string(),
+            reason: "API key sk-ant-secret-key is invalid".to_string(),
+        });
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        // Extract body synchronously via pollable future
+        let body = response.into_body();
+        let bytes = futures::executor::block_on(async {
+            axum::body::to_bytes(body, usize::MAX).await.unwrap()
+        });
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+        // Must NOT contain the actual error details
+        let message = json["error"]["message"].as_str().unwrap();
+        assert_eq!(message, "Internal server error. Please try again later.");
+        assert!(!message.contains("sk-ant"));
+        assert!(!message.contains("anthropic"));
+    }
+
+    #[test]
+    fn api_error_4xx_includes_actionable_message() {
+        let err = ApiError(HamoruError::Unauthorized {
+            reason: "missing Authorization header".to_string(),
+        });
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        let body = response.into_body();
+        let bytes = futures::executor::block_on(async {
+            axum::body::to_bytes(body, usize::MAX).await.unwrap()
+        });
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+        let message = json["error"]["message"].as_str().unwrap();
+        assert!(message.contains("Authorization: Bearer"));
+    }
+
+    #[test]
+    fn api_error_rate_limit_includes_retry_after_header() {
+        let err = ApiError(HamoruError::RateLimitExceeded {
+            retry_after_secs: 42,
+        });
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers().get("retry-after").unwrap(), "42");
     }
 }

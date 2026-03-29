@@ -140,10 +140,33 @@ cargo run --bin hamoru -- run --tags review "Review this code for security issue
 cargo run --bin hamoru -- run -w workflow.yaml "Implement an auth API"
 ```
 
+### 🌐 OpenAI-compatible API server
+
+```bash
+# Start the server (localhost:3000 by default)
+HAMORU_API_KEYS=my-secret-key cargo run --bin hamoru -- serve
+
+# In another terminal — use any OpenAI-compatible client
+curl http://localhost:3000/v1/models \
+  -H "Authorization: Bearer my-secret-key"
+
+curl http://localhost:3000/v1/chat/completions \
+  -H "Authorization: Bearer my-secret-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "claude:claude-sonnet-4-6",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+> **Tip:** Omit `HAMORU_API_KEYS` to skip authentication (convenient for local dev).
+> Use `--port` and `--bind` to customize the listen address.
+
 ## 🔑 Environment Variables
 
 | Variable | Provider | Status |
 |----------|----------|--------|
+| `HAMORU_API_KEYS` | hamoru serve (API auth) | ✅ |
 | `HAMORU_ANTHROPIC_API_KEY` | Anthropic | ✅ |
 | `HAMORU_DEEPSEEK_API_KEY` | DeepSeek | 🔲 Planned (post-v1.0) |
 | `HAMORU_GEMINI_API_KEY` | Google Gemini | 🔲 Planned (post-v1.0) |
@@ -168,7 +191,7 @@ cargo run --bin hamoru -- run -w workflow.yaml "Implement an auth API"
 | `hamoru telemetry pull` | Sync telemetry from remote storage | 🔲 Planned (remote config) |
 | `hamoru telemetry push` | Sync telemetry to remote storage | 🔲 Planned (remote config) |
 | `hamoru status` | Show current configuration overview | 🔲 Planned |
-| `hamoru serve` | Start OpenAI-compatible API server | 🔲 Planned (Phase 5) |
+| `hamoru serve` | Start OpenAI-compatible API server | ✅ |
 | `hamoru agents list` | List agent definitions | 🔲 Planned (Phase 6) |
 | `hamoru agents test <name>` | Dry-run a collaboration pattern | 🔲 Planned (Phase 6) |
 
@@ -232,7 +255,7 @@ hamoru/
 │   │       ├── policy/       # Layer 3: Policy engine
 │   │       ├── orchestrator/ # Layer 4: Workflow execution
 │   │       ├── agents/       # Layer 5: Agent collaboration (planned)
-│   │       ├── server/       # API layer (planned)
+│   │       ├── server/       # API layer: OpenAI wire types, namespace, translation
 │   │       └── error.rs      # Unified error types
 │   └── hamoru-cli/           # CLI entry point
 ├── docs/

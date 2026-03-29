@@ -243,6 +243,8 @@ pub struct CostLimits {
     pub max_cost_per_workflow: Option<f64>,
     /// Maximum cost for an agent collaboration session in USD.
     pub max_cost_per_collaboration: Option<f64>,
+    /// Maximum cost per minute in USD (Phase 5b, design-plan §5.2).
+    pub max_cost_per_minute: Option<f64>,
     /// Maximum daily cost in USD.
     pub max_cost_per_day: Option<f64>,
     /// Alert threshold as a fraction (e.g., 0.8 = alert at 80% of limit).

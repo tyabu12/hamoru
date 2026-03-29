@@ -43,7 +43,8 @@ hamoru is an orchestration infrastructure tool aiming to be "Terraform for LLMs.
 | Logging subscriber | `tracing-subscriber` | Log formatting and env-filter (CLI layer only) |
 | Error handling | `thiserror` | Unified `HamoruError` type |
 | Timestamps | `chrono` | ISO 8601 timestamps in telemetry `HistoryEntry` |
-| Randomness | `rand` | Jitter in `RetryProvider` exponential backoff |
+| Randomness | `rand` | Jitter in `RetryProvider` exponential backoff, request ID generation |
+| Concurrent map | `dashmap` | Per-key token bucket rate limiter (Phase 5b, ADR-011) |
 | Local DB | `rusqlite` | Telemetry persistence (Phase 2+) |
 
 Avoid adding dependencies beyond this list without explicit justification and user confirmation. If a new dependency seems needed, discuss it in an ADR first.
@@ -134,8 +135,9 @@ Prefix the subject line with a single emoji that captures the spirit of the chan
 | 008 | API Server Crate Placement — axum in hamoru-cli vs dedicated crate | design-plan.md Phase 5 |
 | 009 | Parallel Execution Design — dependencies field, join_all, wave execution, merge format | design-plan.md Phase 4b |
 | 010 | Reasoning Budget Control — phased declarative reasoning budget | Future (post-Phase 5) |
+| 011 | API Server Hardening — auth, rate limiting, cost guardrails, streaming timeout | design-plan.md Phase 5b |
 
-Next available number: **011**. Increment sequentially from here.
+Next available number: **012**. Increment sequentially from here.
 
 ## Agent Configuration
 
