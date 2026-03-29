@@ -235,7 +235,7 @@ impl DefaultOrchestrationEngine {
 
             // Pre-wave guard: check remaining budget before launching steps
             if let Some(max_cost) = workflow.max_cost
-                && accumulated_cost >= max_cost
+                && accumulated_cost > max_cost
             {
                 return Err(HamoruError::WorkflowCostExceeded {
                     workflow: workflow.name.clone(),
@@ -1363,7 +1363,17 @@ mod tests {
 
         assert_eq!(result.steps_executed.len(), 3);
         assert_eq!(result.steps_executed[0].step_name, "generate");
+        // Parallel steps: check both are present (order may vary due to HashMap)
+        let parallel_names: Vec<&str> = result.steps_executed[1..]
+            .iter()
+            .map(|s| s.step_name.as_str())
+            .collect();
+        assert!(parallel_names.contains(&"review"));
+        assert!(parallel_names.contains(&"security"));
         assert_eq!(result.terminated_reason, TerminationReason::Completed);
+        // Final output is merged from parallel steps (labeled format)
+        assert!(result.final_output.contains("=== [review] ==="));
+        assert!(result.final_output.contains("=== [security] ==="));
     }
 
     #[tokio::test]
@@ -1517,9 +1527,13 @@ mod tests {
             .await
             .unwrap();
 
-        // The merge step should have received labeled previous_output
+        // The merge step received labeled previous_output from parallel predecessors
         assert_eq!(result.steps_executed.len(), 4);
         assert_eq!(result.steps_executed[3].step_name, "merge");
+        // The merge step's final output reflects its own response
+        assert_eq!(result.final_output, "all clear");
+        // Verify generate output was passed through correctly
+        assert_eq!(result.steps_executed[0].output, "code here");
     }
 
     #[tokio::test]
