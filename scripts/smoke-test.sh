@@ -262,12 +262,14 @@ if $OFFLINE; then
   skip_test "run -m claude:claude-haiku-4-5" "--offline flag set"
   skip_test "run --tags review" "--offline flag set"
   skip_test "run -w workflow (single step)" "--offline flag set"
+  skip_test "run -w workflow (generate-review loop)" "--offline flag set"
 elif [[ -z "${HAMORU_ANTHROPIC_API_KEY:-}" ]]; then
   skip_test "providers test" "HAMORU_ANTHROPIC_API_KEY not set"
   skip_test "run -p cost-optimized" "HAMORU_ANTHROPIC_API_KEY not set"
   skip_test "run -m claude:claude-haiku-4-5" "HAMORU_ANTHROPIC_API_KEY not set"
   skip_test "run --tags review" "HAMORU_ANTHROPIC_API_KEY not set"
   skip_test "run -w workflow (single step)" "HAMORU_ANTHROPIC_API_KEY not set"
+  skip_test "run -w workflow (generate-review loop)" "HAMORU_ANTHROPIC_API_KEY not set"
 else
   run_test "providers test" 0 "$BIN" providers test
   run_test "run -p cost-optimized" 0 \
@@ -290,6 +292,35 @@ steps:
 YAML
   run_test "run -w workflow (single step)" 0 \
     "$BIN" run -w "$WORK_DIR/smoke-workflow.yaml" "Reply with only the word OK"
+
+  # Phase 4a: multi-step workflow (generate → review loop, tool_calling condition)
+  # max_iterations: 3 caps runaway loops. review instruction says "approve it" to
+  # encourage a single pass. Even if LLM returns "improve", max_iterations returns
+  # Ok with a warning (exit 0) so the test still passes.
+  cat > "$WORK_DIR/smoke-gen-review.yaml" <<'YAML'
+name: smoke-generate-review
+max_iterations: 3
+max_cost: 1.00
+steps:
+  - name: generate
+    instruction: |
+      {task}
+      Keep your response to one short sentence.
+    transitions:
+      - condition: done
+        next: review
+  - name: review
+    instruction: |
+      Review the following output and approve it.
+      {previous_output}
+    transitions:
+      - condition: approved
+        next: COMPLETE
+      - condition: improve
+        next: generate
+YAML
+  run_test "run -w workflow (generate-review loop)" 0 \
+    ${TIMEOUT_CMD:+"$TIMEOUT_CMD" 120} "$BIN" run -w "$WORK_DIR/smoke-gen-review.yaml" "Say hello"
 fi
 
 # ---------------------------------------------------------------------------
