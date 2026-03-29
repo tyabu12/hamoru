@@ -75,6 +75,12 @@ pub struct StepConfig {
     /// Per-step override of condition evaluation mode.
     #[serde(default)]
     pub condition_mode: Option<ConditionMode>,
+    /// Explicit step dependencies for DAG construction.
+    /// When `None` (omitted), the step depends on the previous step in list order.
+    /// When `Some([])`, the step has no dependencies (root step).
+    /// When `Some(["a", "b"])`, the step depends on steps "a" and "b" completing.
+    #[serde(default)]
+    pub dependencies: Option<Vec<String>>,
 }
 
 // Custom Debug for StepConfig omits instruction to prevent prompt content leakage (Hard Rule 8).
@@ -88,6 +94,7 @@ impl fmt::Debug for StepConfig {
             .field("context_policy", &self.context_policy)
             .field("keep_last_n", &self.keep_last_n)
             .field("condition_mode", &self.condition_mode)
+            .field("dependencies", &self.dependencies)
             .finish()
     }
 }
@@ -157,6 +164,35 @@ impl WorkflowConfig {
                             step_names.iter().collect::<Vec<_>>()
                         ),
                     });
+                }
+            }
+        }
+
+        // Dependency targets reference existing steps and no self-dependency
+        for step in &self.steps {
+            if let Some(deps) = &step.dependencies {
+                for dep in deps {
+                    if dep == &step.name {
+                        return Err(HamoruError::WorkflowValidationError {
+                            workflow: name.clone(),
+                            reason: format!(
+                                "Step '{}' cannot depend on itself. Remove the self-dependency.",
+                                step.name
+                            ),
+                        });
+                    }
+                    if !step_names.contains(dep.as_str()) {
+                        return Err(HamoruError::WorkflowValidationError {
+                            workflow: name.clone(),
+                            reason: format!(
+                                "Step '{}' depends on unknown step '{}'. \
+                                 Available steps: {:?}. Check the dependencies field.",
+                                step.name,
+                                dep,
+                                step_names.iter().collect::<Vec<_>>()
+                            ),
+                        });
+                    }
                 }
             }
         }
@@ -417,6 +453,7 @@ steps:
                 context_policy: None,
                 keep_last_n: None,
                 condition_mode: None,
+                dependencies: None,
             }],
         };
         let err = config.validate().unwrap_err();
@@ -435,5 +472,91 @@ steps:
         assert_eq!(deserialized.name, config.name);
         assert_eq!(deserialized.max_iterations, config.max_iterations);
         assert_eq!(deserialized.steps.len(), config.steps.len());
+    }
+
+    #[test]
+    fn parse_dependencies_field() {
+        let yaml = r#"
+name: parallel
+steps:
+  - name: generate
+    instruction: "{task}"
+  - name: review
+    instruction: "Review: {previous_output}"
+    dependencies: [generate]
+  - name: security
+    instruction: "Audit: {previous_output}"
+    dependencies: [generate]
+  - name: merge
+    instruction: "Synthesize: {previous_output}"
+    dependencies: [review, security]
+    transitions:
+      - condition: done
+        next: COMPLETE
+"#;
+        let config = parse_workflow(yaml).unwrap();
+        assert!(config.steps[0].dependencies.is_none());
+        assert_eq!(
+            config.steps[1].dependencies.as_deref(),
+            Some(["generate".to_string()].as_slice())
+        );
+        assert_eq!(
+            config.steps[2].dependencies.as_deref(),
+            Some(["generate".to_string()].as_slice())
+        );
+        assert_eq!(
+            config.steps[3].dependencies.as_ref().unwrap(),
+            &["review".to_string(), "security".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_without_dependencies_backward_compat() {
+        // Existing YAML without dependencies field must still parse
+        let config = parse_workflow(CANONICAL_YAML).unwrap();
+        assert!(config.steps[0].dependencies.is_none());
+        assert!(config.steps[1].dependencies.is_none());
+    }
+
+    #[test]
+    fn validate_dependency_targets_unknown() {
+        let yaml = r#"
+name: bad-dep
+steps:
+  - name: step1
+    instruction: "do"
+    dependencies: [nonexistent]
+"#;
+        let err = parse_workflow(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("nonexistent"), "Error: {msg}");
+        assert!(msg.contains("depends on unknown step"), "Error: {msg}");
+    }
+
+    #[test]
+    fn validate_self_dependency() {
+        let yaml = r#"
+name: self-dep
+steps:
+  - name: step1
+    instruction: "do"
+    dependencies: [step1]
+"#;
+        let err = parse_workflow(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("cannot depend on itself"), "Error: {msg}");
+    }
+
+    #[test]
+    fn validate_empty_dependencies_is_valid_root() {
+        let yaml = r#"
+name: root
+steps:
+  - name: step1
+    instruction: "do"
+    dependencies: []
+"#;
+        let config = parse_workflow(yaml).unwrap();
+        assert_eq!(config.steps[0].dependencies.as_deref(), Some([].as_slice()));
     }
 }

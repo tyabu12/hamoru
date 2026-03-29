@@ -1308,10 +1308,10 @@ hamoru run -w generate-and-review "Implement an auth API"
 **Goal**: Parallel execution of independent steps
 
 **Deliverables:**
-- [ ] Step DAG construction (dependency analysis)
-- [ ] Parallel execution engine (`tokio::JoinSet`-based)
-- [ ] Parallel step result merge strategy
-- [ ] Cost cap apportioning/checking during parallel execution
+- [x] Step DAG construction (dependency analysis)
+- [x] Parallel execution engine (`futures::future::join_all`-based — see ADR-009 for deviation from `tokio::JoinSet`)
+- [x] Parallel step result merge strategy
+- [x] Cost cap apportioning/checking during parallel execution
 
 **Completion criteria:**
 ```bash

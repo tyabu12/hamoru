@@ -7,6 +7,7 @@
 pub mod condition;
 pub mod config;
 pub mod context;
+pub mod dag;
 pub mod engine;
 
 use std::fmt;
@@ -90,6 +91,10 @@ pub struct WorkflowStep {
     pub context_policy: ContextPolicy,
     /// Condition evaluation mode for this step.
     pub condition_mode: ConditionMode,
+    /// Explicit dependencies on other steps for DAG construction.
+    /// When `None`, depends on the previous step in definition order (sequential behavior).
+    /// When `Some(vec![])`, the step has no dependencies (root step).
+    pub dependencies: Option<Vec<String>>,
 }
 
 // Custom Debug for WorkflowStep omits instruction to prevent prompt content leakage (Hard Rule 8).
@@ -102,6 +107,7 @@ impl fmt::Debug for WorkflowStep {
             .field("transitions", &self.transitions)
             .field("context_policy", &self.context_policy)
             .field("condition_mode", &self.condition_mode)
+            .field("dependencies", &self.dependencies)
             .finish()
     }
 }
@@ -282,6 +288,7 @@ impl TryFrom<config::WorkflowConfig> for Workflow {
                     transitions,
                     context_policy,
                     condition_mode,
+                    dependencies: step.dependencies,
                 })
             })
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -400,5 +407,49 @@ steps:
         let config = parse_workflow(yaml).unwrap();
         let workflow = Workflow::try_from(config).unwrap();
         assert!(workflow.steps[0].transitions.is_empty());
+    }
+
+    #[test]
+    fn dependencies_passed_through_conversion() {
+        let yaml = r#"
+name: parallel
+steps:
+  - name: gen
+    instruction: "do"
+  - name: rev
+    instruction: "review"
+    dependencies: [gen]
+  - name: sec
+    instruction: "audit"
+    dependencies: [gen]
+"#;
+        let config = parse_workflow(yaml).unwrap();
+        let workflow = Workflow::try_from(config).unwrap();
+        assert!(workflow.steps[0].dependencies.is_none());
+        assert_eq!(
+            workflow.steps[1].dependencies.as_deref(),
+            Some(["gen".to_string()].as_slice())
+        );
+        assert_eq!(
+            workflow.steps[2].dependencies.as_deref(),
+            Some(["gen".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn dependencies_none_for_existing_workflows() {
+        let yaml = r#"
+name: test
+steps:
+  - name: step1
+    tags: [review]
+    instruction: "Do {task}"
+    transitions:
+      - condition: done
+        next: COMPLETE
+"#;
+        let config = parse_workflow(yaml).unwrap();
+        let workflow = Workflow::try_from(config).unwrap();
+        assert!(workflow.steps[0].dependencies.is_none());
     }
 }

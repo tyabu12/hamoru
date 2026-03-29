@@ -5,8 +5,8 @@
 
 ## Current Phase
 
-**Phase 4a: Orchestration Engine — Sequential**
-- See: `docs/design-plan.md` Section 9 (Phase 4a)
+**Phase 5: API Server (serve)**
+- See: `docs/design-plan.md` Section 9 (Phase 5)
 
 <!-- Update this section manually when moving to the next Phase. -->
 
@@ -124,8 +124,9 @@ Prefix the subject line with a single emoji that captures the spirit of the chan
 | 006 | Orchestration Engine Design — module structure, condition evaluation, warn-not-error | design-plan.md Phase 4a |
 | 007 | Agent Framework Integration Design — content block types, tool_call buffering, SSE progress | Cross-cutting (Phase 5 + type design) |
 | 008 | API Server Crate Placement — axum in hamoru-cli vs dedicated crate | design-plan.md Phase 5 |
+| 009 | Parallel Execution Design — dependencies field, join_all, wave execution, merge format | design-plan.md Phase 4b |
 
-Next available number: **009**. Increment sequentially from here.
+Next available number: **010**. Increment sequentially from here.
 
 ## Agent Configuration
 
