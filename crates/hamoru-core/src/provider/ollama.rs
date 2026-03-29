@@ -205,6 +205,7 @@ fn parse_ndjson_stream(
                             cache_creation_input_tokens: None,
                             cache_read_input_tokens: None,
                         }),
+                        tool_calls: None,
                     };
                     return Some((Ok(chat_chunk), state));
                 }
@@ -214,6 +215,7 @@ fn parse_ndjson_stream(
                     delta: chunk.message.content,
                     finish_reason: None,
                     usage: None,
+                    tool_calls: None,
                 };
                 return Some((Ok(chat_chunk), state));
             }

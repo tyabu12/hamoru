@@ -141,6 +141,20 @@ fn build_anthropic_request(request: &ChatRequest, default_max_tokens: u64) -> An
                                 "url": url,
                             }
                         }),
+                        ContentPart::ToolUse { id, name, input } => serde_json::json!({
+                            "type": "tool_use",
+                            "id": id,
+                            "name": name,
+                            "input": input,
+                        }),
+                        ContentPart::ToolResult {
+                            tool_use_id,
+                            content,
+                        } => serde_json::json!({
+                            "type": "tool_result",
+                            "tool_use_id": tool_use_id,
+                            "content": content,
+                        }),
                     })
                     .collect();
                 serde_json::Value::Array(blocks)
@@ -168,6 +182,9 @@ fn build_anthropic_request(request: &ChatRequest, default_max_tokens: u64) -> An
 
     let tool_choice = request.tool_choice.as_ref().map(|tc| match tc {
         ToolChoice::Auto => serde_json::json!({"type": "auto"}),
+        // Anthropic has no "none" equivalent; map to "auto" and let the model decide.
+        // The provider will still respect the absence of tool_choice if tools are omitted.
+        ToolChoice::None => serde_json::json!({"type": "auto"}),
         ToolChoice::Required => serde_json::json!({"type": "any"}),
         ToolChoice::Tool { name } => serde_json::json!({"type": "tool", "name": name}),
     });
@@ -427,6 +444,7 @@ fn extract_next_event<S>(state: &mut SseState<S>) -> Option<Result<ChatChunk>> {
                         delta: text.clone(),
                         finish_reason: None,
                         usage: None,
+                        tool_calls: None,
                     }));
                 }
             }
@@ -443,6 +461,7 @@ fn extract_next_event<S>(state: &mut SseState<S>) -> Option<Result<ChatChunk>> {
                     delta: String::new(),
                     finish_reason,
                     usage,
+                    tool_calls: None,
                 }));
             }
             "message_stop" => {

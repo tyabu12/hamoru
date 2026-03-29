@@ -47,6 +47,30 @@ pub enum ContentPart {
         /// Base64-encoded image data.
         data: String,
     },
+    /// A tool invocation by the assistant (ADR-007).
+    ///
+    /// Maps from OpenAI `assistant.tool_calls` and Anthropic `tool_use` content blocks.
+    /// `input` is parsed JSON rather than a raw string so that provider adapters
+    /// can work with structured data without repeated parsing.
+    #[serde(rename = "tool_use")]
+    ToolUse {
+        /// Unique identifier for this tool call.
+        id: String,
+        /// Name of the tool being called.
+        name: String,
+        /// Parsed JSON arguments for the tool.
+        input: serde_json::Value,
+    },
+    /// A tool execution result (ADR-007).
+    ///
+    /// Maps from OpenAI `role: "tool"` messages and Anthropic `tool_result` content blocks.
+    #[serde(rename = "tool_result")]
+    ToolResult {
+        /// ID of the tool call this result corresponds to.
+        tool_use_id: String,
+        /// The tool's output content.
+        content: String,
+    },
 }
 
 /// Content of a message — optimized for the common text-only case.
@@ -188,6 +212,8 @@ pub struct ToolCall {
 pub enum ToolChoice {
     /// Model decides whether to call a tool.
     Auto,
+    /// Model must not call any tool. Tools are visible but suppressed.
+    None,
     /// Model must call a tool (any tool from the provided list).
     Required,
     /// Model must call a specific tool by name.
@@ -256,6 +282,74 @@ pub struct ChatChunk {
     pub finish_reason: Option<FinishReason>,
     /// Present only on the final chunk (total usage).
     pub usage: Option<TokenUsage>,
+    /// Complete tool calls (ADR-007: buffered, not incremental).
+    ///
+    /// Tool calls are accumulated by the provider adapter and emitted as
+    /// complete objects on the final chunk. This avoids the fragmented
+    /// argument streaming that has caused persistent bugs in other projects.
+    pub tool_calls: Option<Vec<ToolCall>>,
+}
+
+/// Accumulates incremental tool call fragments from streaming responses
+/// into complete `ToolCall` objects (ADR-007).
+///
+/// Provider adapters use this to buffer partial tool call data (name, argument
+/// fragments) and emit complete tool calls only when the stream signals completion.
+/// This shared utility prevents duplicating buffering logic across providers.
+#[derive(Debug, Default)]
+pub struct ToolCallAccumulator {
+    /// In-progress tool calls keyed by index (provider stream order).
+    pending: std::collections::BTreeMap<u32, PendingToolCall>,
+}
+
+/// A tool call being assembled from streaming fragments.
+#[derive(Debug, Default)]
+struct PendingToolCall {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+impl ToolCallAccumulator {
+    /// Creates a new empty accumulator.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Feed a tool call fragment from a streaming chunk.
+    ///
+    /// `index` is the tool call's position in the array (provider-assigned).
+    /// Call this for each incremental piece: first with id+name, then with
+    /// argument fragments.
+    pub fn feed(&mut self, index: u32, id: Option<&str>, name: Option<&str>, arguments: &str) {
+        let entry = self.pending.entry(index).or_default();
+        if let Some(id) = id {
+            entry.id = id.to_string();
+        }
+        if let Some(name) = name {
+            entry.name = name.to_string();
+        }
+        entry.arguments.push_str(arguments);
+    }
+
+    /// Returns `true` if any tool call fragments have been accumulated.
+    pub fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
+    /// Consumes the accumulator and returns complete `ToolCall` objects.
+    ///
+    /// Call this when the stream signals completion (finish_reason received).
+    pub fn finish(self) -> Vec<ToolCall> {
+        self.pending
+            .into_values()
+            .map(|p| ToolCall {
+                id: p.id,
+                name: p.name,
+                arguments: p.arguments,
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -386,9 +480,16 @@ mod tests {
     }
 
     #[test]
+    fn tool_choice_none_serialization() {
+        let none = serde_json::to_value(&ToolChoice::None).unwrap();
+        assert_eq!(none, serde_json::json!("none"));
+    }
+
+    #[test]
     fn tool_choice_deserialization_roundtrip() {
         let choices = vec![
             ToolChoice::Auto,
+            ToolChoice::None,
             ToolChoice::Required,
             ToolChoice::Tool {
                 name: "report_status".to_string(),
@@ -414,6 +515,117 @@ mod tests {
         };
         let json = serde_json::to_value(&request).unwrap();
         assert!(!json.as_object().unwrap().contains_key("tool_choice"));
+    }
+
+    #[test]
+    fn content_part_tool_use_serde_roundtrip() {
+        let tool_use = ContentPart::ToolUse {
+            id: "call_123".to_string(),
+            name: "get_weather".to_string(),
+            input: serde_json::json!({"location": "Tokyo"}),
+        };
+        let json = serde_json::to_string(&tool_use).unwrap();
+        let parsed: ContentPart = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, tool_use);
+    }
+
+    #[test]
+    fn content_part_tool_result_serde_roundtrip() {
+        let tool_result = ContentPart::ToolResult {
+            tool_use_id: "call_123".to_string(),
+            content: "Sunny, 25C".to_string(),
+        };
+        let json = serde_json::to_string(&tool_result).unwrap();
+        let parsed: ContentPart = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, tool_result);
+    }
+
+    #[test]
+    fn content_part_tool_use_has_correct_type_tag() {
+        let tool_use = ContentPart::ToolUse {
+            id: "call_1".to_string(),
+            name: "search".to_string(),
+            input: serde_json::json!({}),
+        };
+        let json = serde_json::to_value(&tool_use).unwrap();
+        assert_eq!(json["type"], "tool_use");
+        assert_eq!(json["id"], "call_1");
+        assert_eq!(json["name"], "search");
+    }
+
+    #[test]
+    fn content_part_tool_result_has_correct_type_tag() {
+        let tool_result = ContentPart::ToolResult {
+            tool_use_id: "call_1".to_string(),
+            content: "result".to_string(),
+        };
+        let json = serde_json::to_value(&tool_result).unwrap();
+        assert_eq!(json["type"], "tool_result");
+        assert_eq!(json["tool_use_id"], "call_1");
+    }
+
+    #[test]
+    fn chat_chunk_with_tool_calls() {
+        let chunk = ChatChunk {
+            delta: String::new(),
+            finish_reason: Some(FinishReason::ToolUse),
+            usage: None,
+            tool_calls: Some(vec![ToolCall {
+                id: "call_1".to_string(),
+                name: "search".to_string(),
+                arguments: r#"{"q":"rust"}"#.to_string(),
+            }]),
+        };
+        let json = serde_json::to_value(&chunk).unwrap();
+        assert!(json["tool_calls"].is_array());
+        assert_eq!(json["tool_calls"][0]["name"], "search");
+    }
+
+    #[test]
+    fn chat_chunk_without_tool_calls() {
+        let chunk = ChatChunk {
+            delta: "hello".to_string(),
+            finish_reason: None,
+            usage: None,
+            tool_calls: None,
+        };
+        let json = serde_json::to_value(&chunk).unwrap();
+        assert!(json["tool_calls"].is_null());
+    }
+
+    #[test]
+    fn tool_call_accumulator_single_tool() {
+        let mut acc = ToolCallAccumulator::new();
+        acc.feed(0, Some("call_1"), Some("search"), "");
+        acc.feed(0, None, None, r#"{"q":"#);
+        acc.feed(0, None, None, r#""rust"}"#);
+        assert!(acc.has_pending());
+
+        let calls = acc.finish();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "call_1");
+        assert_eq!(calls[0].name, "search");
+        assert_eq!(calls[0].arguments, r#"{"q":"rust"}"#);
+    }
+
+    #[test]
+    fn tool_call_accumulator_multiple_tools() {
+        let mut acc = ToolCallAccumulator::new();
+        acc.feed(0, Some("call_1"), Some("search"), r#"{"q":"a"}"#);
+        acc.feed(1, Some("call_2"), Some("fetch"), r#"{"url":"b"}"#);
+
+        let calls = acc.finish();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].name, "search");
+        assert_eq!(calls[1].name, "fetch");
+    }
+
+    #[test]
+    fn tool_call_accumulator_empty() {
+        let acc = ToolCallAccumulator::new();
+        assert!(!acc.has_pending());
+        let calls = acc.finish();
+        assert!(calls.is_empty());
     }
 
     #[test]

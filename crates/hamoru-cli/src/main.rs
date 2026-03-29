@@ -1,5 +1,7 @@
 //! hamoru CLI — LLM Orchestration Infrastructure as Code.
 
+mod server;
+
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -153,10 +155,7 @@ async fn main() {
             Ok(())
         }
         Commands::Run(args) => run_prompt(args).await,
-        Commands::Serve(_args) => {
-            eprintln!("Not yet implemented: serve");
-            Ok(())
-        }
+        Commands::Serve(args) => run_serve(args).await,
         Commands::Providers(cmd) => match cmd {
             ProvidersCommands::List => providers_list().await,
             ProvidersCommands::Test => providers_test().await,
@@ -233,6 +232,48 @@ fn load_and_build() -> Result<(HamoruConfig, ProviderRegistry), HamoruError> {
     let config = config::load_config(&path)?;
     let registry = build_registry(&config)?;
     Ok((config, registry))
+}
+
+/// Starts the OpenAI-compatible API server.
+async fn run_serve(args: ServeArgs) -> Result<(), HamoruError> {
+    let (_config, registry) = load_and_build()?;
+
+    // Load policy engine
+    let policy_path = find_policy_config_path()?;
+    let policy_config = hamoru_core::policy::config::load_policy_config(&policy_path)?;
+    let policy_engine = hamoru_core::policy::DefaultPolicyEngine::new(policy_config);
+
+    // Initialize telemetry
+    ensure_hamoru_dir().await?;
+    let telemetry = create_telemetry_store().await?;
+
+    let state = std::sync::Arc::new(server::AppState::new(
+        registry,
+        policy_engine,
+        Box::new(telemetry),
+    ));
+
+    let app = server::build_router(state);
+    let bind_addr = format!("{}:{}", args.bind, args.port);
+    let listener = tokio::net::TcpListener::bind(&bind_addr)
+        .await
+        .map_err(|e| HamoruError::ConfigError {
+            reason: format!("Failed to bind to {bind_addr}: {e}"),
+        })?;
+
+    eprintln!("hamoru serve listening on http://{bind_addr}");
+    eprintln!("  POST /v1/chat/completions");
+    eprintln!("  GET  /v1/models");
+    eprintln!();
+    eprintln!("Press Ctrl+C to stop.");
+
+    axum::serve(listener, app)
+        .await
+        .map_err(|e| HamoruError::ConfigError {
+            reason: format!("Server error: {e}"),
+        })?;
+
+    Ok(())
 }
 
 /// Appends a CLI-layer remediation hint to an error message.
