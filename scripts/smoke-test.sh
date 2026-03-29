@@ -126,15 +126,15 @@ run_test() {
     echo "[PASS] $name"
     PASSED=$((PASSED + 1))
     if $VERBOSE; then
-      [[ -s "$STDOUT_FILE" ]] && sed 's/^/  stdout: /' "$STDOUT_FILE"
-      [[ -s "$STDERR_FILE" ]] && sed 's/^/  stderr: /' "$STDERR_FILE"
+      if [[ -s "$STDOUT_FILE" ]]; then sed 's/^/  stdout: /' "$STDOUT_FILE"; fi
+      if [[ -s "$STDERR_FILE" ]]; then sed 's/^/  stderr: /' "$STDERR_FILE"; fi
     fi
   else
     echo "[FAIL] $name (expected exit=$expected_exit, got=$actual_exit)"
     FAILED=$((FAILED + 1))
     # Always show output on failure
-    [[ -s "$STDOUT_FILE" ]] && sed 's/^/  stdout: /' "$STDOUT_FILE"
-    [[ -s "$STDERR_FILE" ]] && sed 's/^/  stderr: /' "$STDERR_FILE"
+    if [[ -s "$STDOUT_FILE" ]]; then sed 's/^/  stdout: /' "$STDOUT_FILE"; fi
+    if [[ -s "$STDERR_FILE" ]]; then sed 's/^/  stderr: /' "$STDERR_FILE"; fi
   fi
 }
 
