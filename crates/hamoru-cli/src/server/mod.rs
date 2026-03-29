@@ -6,6 +6,8 @@
 // Wired into the router in commit 7 (middleware ordering).
 #[allow(dead_code)]
 pub mod auth;
+#[allow(dead_code)]
+pub mod rate_limit;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};

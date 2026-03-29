@@ -53,6 +53,7 @@ deny = [
 skip = [
     { crate = "getrandom@0.2.17", reason = "transitive dep of ring 0.17; resolves when ring updates" },
     { crate = "windows-sys@0.52.0", reason = "transitive dep of ring 0.17; resolves when ring updates" },
+    { crate = "hashbrown@0.14.5", reason = "transitive dep of dashmap 6.1; resolves when dashmap updates to hashbrown 0.15+" },
 ]
 
 # --- Sources ---
