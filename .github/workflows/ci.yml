@@ -533,6 +533,7 @@ jobs:
             if [ -z "$CLOUD_PARSE_ERROR" ] && [ "$CLOUD_OUTCOME" = "failure" ]; then
               echo "### Cloud Smoke Test"
               echo ""
+              echo "> [!WARNING]"
               echo "> Cloud smoke test failed (no parseable output)."
             elif [ -z "$CLOUD_PARSE_ERROR" ]; then
               echo "### Cloud Smoke Test"
@@ -556,7 +557,12 @@ jobs:
               if [ "$C_SKIPPED" != "0" ]; then
                 LINE="${LINE}, ${C_SKIPPED} skipped"
               fi
-              echo "**${LINE}**"
+              if [ "$C_FAILED" != "0" ]; then
+                echo "> [!WARNING]"
+                echo "> **${LINE}**"
+              else
+                echo "**${LINE}**"
+              fi
             fi
 
             # Coverage with delta
