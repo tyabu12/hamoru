@@ -108,6 +108,13 @@ jobs:
     # Advisory: CPU inference on shared runners can be slow/flaky.
     # Promote to required after 2-4 weeks of stable green runs.
     continue-on-error: true
+    outputs:
+      smoke-passed: ${{ steps.report.outputs.passed }}
+      smoke-failed: ${{ steps.report.outputs.failed }}
+      smoke-skipped: ${{ steps.report.outputs.skipped }}
+      smoke-parse-error: ${{ steps.report.outputs.parse_error }}
+      smoke-model: ${{ steps.report.outputs.model }}
+      job-outcome: ${{ steps.report.outputs.job_outcome }}
     env:
       OLLAMA_HOST: "127.0.0.1:11434"
     steps:
@@ -173,9 +180,34 @@ jobs:
       # 3. GROUP 2 (external API tests) auto-skips due to missing API keys
       # 4. The existing `check` job retains --offline for zero-network guarantee
       - name: Smoke test (with Ollama)
-        run: bash scripts/smoke-test.sh --verbose
+        id: smoke
+        run: |
+          bash scripts/smoke-test.sh --verbose 2>&1 | tee /tmp/ollama-smoke.log
         env:
           HAMORU_BIN: target/debug/hamoru-cli
+
+      # Separate step ensures outputs are captured even when smoke test fails.
+      # Uses steps.smoke.outcome (not .result) to see the real exit status
+      # despite continue-on-error at the job level.
+      - name: Parse smoke test results
+        id: report
+        if: ${{ !cancelled() }}
+        run: |
+          SUMMARY=$(grep -E '^# [0-9]+ passed,' /tmp/ollama-smoke.log | tail -1)
+          if [ -z "$SUMMARY" ]; then
+            echo "parse_error=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "parse_error=false" >> "$GITHUB_OUTPUT"
+            echo "passed=$(echo "$SUMMARY" | grep -oE '^# [0-9]+' | grep -oE '[0-9]+')" >> "$GITHUB_OUTPUT"
+            echo "failed=$(echo "$SUMMARY" | grep -oE '[0-9]+ failed' | grep -oE '[0-9]+')" >> "$GITHUB_OUTPUT"
+            echo "skipped=$(echo "$SUMMARY" | grep -oE '[0-9]+ skipped' | grep -oE '[0-9]+')" >> "$GITHUB_OUTPUT"
+          fi
+
+          MODEL=$(grep -oE 'run -m local:[a-zA-Z0-9._:/-]+ \(ollama\)' /tmp/ollama-smoke.log | head -1 \
+            | sed 's/run -m local://;s/ (ollama)//')
+          echo "model=${MODEL:-unknown}" >> "$GITHUB_OUTPUT"
+
+          echo "job_outcome=${{ steps.smoke.outcome }}" >> "$GITHUB_OUTPUT"
 
   security:
     name: Security
@@ -250,7 +282,7 @@ jobs:
   # Do NOT change the trigger to pull_request_target.
   pr-comment:
     name: PR Comment
-    needs: [check, pr-coverage]
+    needs: [check, ollama-smoke, pr-coverage]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: >-
@@ -304,6 +336,12 @@ jobs:
           SMOKE_FAILED: ${{ needs.check.outputs.smoke-failed }}
           SMOKE_SKIPPED: ${{ needs.check.outputs.smoke-skipped }}
           SMOKE_PARSE_ERROR: ${{ needs.check.outputs.smoke-parse-error }}
+          OLLAMA_PASSED: ${{ needs.ollama-smoke.outputs.smoke-passed }}
+          OLLAMA_FAILED: ${{ needs.ollama-smoke.outputs.smoke-failed }}
+          OLLAMA_SKIPPED: ${{ needs.ollama-smoke.outputs.smoke-skipped }}
+          OLLAMA_PARSE_ERROR: ${{ needs.ollama-smoke.outputs.smoke-parse-error }}
+          OLLAMA_MODEL: ${{ needs.ollama-smoke.outputs.smoke-model }}
+          OLLAMA_OUTCOME: ${{ needs.ollama-smoke.outputs.job-outcome }}
           PR_COV: ${{ steps.cov.outputs.pct }}
           BASELINE_PCT: ${{ steps.baseline.outputs.pct }}
           CI_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -365,6 +403,36 @@ jobs:
               fi
               if [ "$S_SKIPPED" != "0" ]; then
                 LINE="${LINE}, ${S_SKIPPED} skipped"
+              fi
+              echo "**${LINE}**"
+            fi
+
+            # Ollama smoke test results
+            echo ""
+            if [ -z "$OLLAMA_PARSE_ERROR" ]; then
+              echo "### Ollama Smoke Test"
+              echo ""
+              echo "> Ollama smoke test did not produce output."
+            elif [ "$OLLAMA_PARSE_ERROR" = "true" ]; then
+              echo "### Ollama Smoke Test"
+              echo ""
+              echo "> Could not parse Ollama smoke test output."
+            else
+              O_PASSED=$(echo "${OLLAMA_PASSED:-0}" | grep -oE '^[0-9]+$' || echo "0")
+              O_FAILED=$(echo "${OLLAMA_FAILED:-0}" | grep -oE '^[0-9]+$' || echo "0")
+              O_SKIPPED=$(echo "${OLLAMA_SKIPPED:-0}" | grep -oE '^[0-9]+$' || echo "0")
+
+              echo "### Ollama Smoke Test"
+              echo ""
+              LINE="${O_PASSED} passed"
+              if [ "$O_FAILED" != "0" ]; then
+                LINE="${LINE}, ${O_FAILED} FAILED"
+              fi
+              if [ "$O_SKIPPED" != "0" ]; then
+                LINE="${LINE}, ${O_SKIPPED} skipped"
+              fi
+              if [ -n "$OLLAMA_MODEL" ] && [ "$OLLAMA_MODEL" != "unknown" ]; then
+                LINE="${LINE} (${OLLAMA_MODEL})"
               fi
               echo "**${LINE}**"
             fi
