@@ -169,10 +169,15 @@ impl DefaultOrchestrationEngine {
             let step_messages =
                 build_step_messages(&step.instruction, task, previous_output.as_deref());
             message_history.extend(step_messages);
-            message_history.push(Message {
-                role: crate::provider::types::Role::Assistant,
-                content: crate::provider::types::MessageContent::Text(raw_content),
-            });
+            // Skip empty Assistant messages: tool-calling steps may produce
+            // no text content (only tool_use blocks). Empty messages cause
+            // Anthropic API 400 errors ("non-empty content" requirement).
+            if !raw_content.trim().is_empty() {
+                message_history.push(Message {
+                    role: crate::provider::types::Role::Assistant,
+                    content: crate::provider::types::MessageContent::Text(raw_content),
+                });
+            }
 
             previous_output = Some(step_result.output.clone());
             steps_executed.push(step_result);
@@ -341,7 +346,9 @@ impl DefaultOrchestrationEngine {
                 };
                 let source = match err {
                     HamoruError::MidWorkflowFailure { source, .. } => source,
-                    other => Box::new(other),
+                    // SECURITY: sanitize non-MidWorkflowFailure errors before
+                    // display — they haven't been through sanitize_error() yet.
+                    other => sanitize_error(other),
                 };
                 return Err(HamoruError::MidWorkflowFailure {
                     step: step_name,
@@ -405,13 +412,16 @@ impl DefaultOrchestrationEngine {
                 steps_executed.push(step_result);
             }
 
-            // Update message history with merged wave output
+            // Update message history with merged wave output.
+            // Skip empty merged content: tool-calling steps may produce no text.
             let merged_content = super::dag::merge_previous_outputs(&merged_outputs);
             message_history = history_snapshot;
-            message_history.push(Message {
-                role: crate::provider::types::Role::Assistant,
-                content: crate::provider::types::MessageContent::Text(merged_content),
-            });
+            if !merged_content.trim().is_empty() {
+                message_history.push(Message {
+                    role: crate::provider::types::Role::Assistant,
+                    content: crate::provider::types::MessageContent::Text(merged_content),
+                });
+            }
         }
 
         // All waves complete: determine final output
