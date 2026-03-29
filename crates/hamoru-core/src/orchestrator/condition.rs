@@ -346,8 +346,7 @@ pub(crate) mod tests {
 
     #[test]
     fn tool_call_whitespace_content_uses_reason() {
-        let response =
-            response_with_tool_status_and_content("approved", "Looks good", "   \n  ");
+        let response = response_with_tool_status_and_content("approved", "Looks good", "   \n  ");
         let output = extract_status_from_tool_call(&response).unwrap();
         // Whitespace-only content treated as empty, falls back to reason
         assert_eq!(output.content, "Looks good");
