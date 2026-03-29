@@ -90,7 +90,7 @@ cargo build
 cargo run -p hamoru-cli -- init
 ```
 
-### Option A: Local LLM (no API key required)
+### 🏠 Option A: Local LLM (no API key required)
 
 Install [Ollama](https://ollama.com), then add it to your config (`.hamoru/hamoru.yaml`).  
 We use `llama3.2` (3B, ~2 GB) here for a quick first run — you can swap in any model Ollama supports:
@@ -110,7 +110,7 @@ cargo run -p hamoru-cli -- providers test
 cargo run -p hamoru-cli -- run -m local:llama3.2 "Hello, world!"
 ```
 
-### Option B: Cloud LLM (Anthropic Claude)
+### ☁️ Option B: Cloud LLM (API key required)
 
 Set your API key as an environment variable:
 
