@@ -250,6 +250,22 @@ fn format_cli_error(e: &HamoruError) -> String {
         HamoruError::ConfigError { .. } => {
             format!("{e}\n\nHint: Run 'hamoru init' to create a configuration file.")
         }
+        HamoruError::WorkflowValidationError { .. } => {
+            format!("{e}\n\nHint: Check the workflow YAML syntax and step references.")
+        }
+        HamoruError::WorkflowCostExceeded { .. } => {
+            format!("{e}\n\nHint: Increase max_cost in the workflow file or reduce step count.")
+        }
+        HamoruError::ConditionEvaluationFailed { .. } => {
+            format!("{e}\n\nHint: Check condition_mode setting and step transition conditions.")
+        }
+        HamoruError::MidWorkflowFailure {
+            partial_results, ..
+        } => {
+            let completed = partial_results.len();
+            format!("{e}\n\n{completed} step(s) completed before the failure.")
+            // TODO(§11.3): Save partial results to .hamoru/partial/<run-id>.json
+        }
         _ => e.to_string(),
     }
 }
@@ -322,6 +338,7 @@ async fn providers_test() -> Result<(), HamoruError> {
                         temperature: None,
                         max_tokens: Some(1),
                         tools: None,
+                        tool_choice: None,
                         stream: false,
                     })
                     .await
@@ -342,8 +359,83 @@ async fn providers_test() -> Result<(), HamoruError> {
 // run
 // ---------------------------------------------------------------------------
 
+/// Displays a workflow execution report to stderr.
+fn display_execution_report(result: &hamoru_core::orchestrator::ExecutionResult) {
+    for (i, step) in result.steps_executed.iter().enumerate() {
+        let latency_secs = step.latency_ms as f64 / 1000.0;
+        eprintln!(
+            "Step {}: {} ({}, {})",
+            i + 1,
+            step.step_name,
+            step.model_used,
+            step.policy_applied,
+        );
+        // Show first line of output as summary
+        let summary = step
+            .output
+            .lines()
+            .next()
+            .unwrap_or("")
+            .chars()
+            .take(80)
+            .collect::<String>();
+        eprintln!("  -> {} ({:.1}s, ${:.3})", summary, latency_secs, step.cost);
+    }
+
+    // Check for max iterations warning
+    if let hamoru_core::orchestrator::TerminationReason::MaxIterationsReached { max } =
+        &result.terminated_reason
+    {
+        eprintln!();
+        eprintln!(
+            "Warning: Workflow reached max iterations ({max}). Last output returned as final result."
+        );
+        eprintln!("  Tip: Increase max_iterations or review the evaluator's criteria.");
+    }
+
+    let total_secs = result.total_latency_ms as f64 / 1000.0;
+    eprintln!(
+        "\nWorkflow complete: {} steps, ${:.3}, {:.1}s",
+        result.steps_executed.len(),
+        result.total_cost,
+        total_secs
+    );
+
+    // Print final output to stdout
+    println!("{}", result.final_output);
+}
+
 async fn run_prompt(args: RunArgs) -> Result<(), HamoruError> {
     let (_config, registry) = load_and_build()?;
+
+    // Workflow mode (-w)
+    if let Some(ref workflow_path) = args.workflow {
+        let engine = hamoru_core::orchestrator::DefaultOrchestrationEngine;
+        let workflow = hamoru_core::orchestrator::OrchestrationEngine::load_workflow(
+            &engine,
+            std::path::Path::new(workflow_path),
+        )?;
+
+        let policy_path = find_policy_config_path()?;
+        let policy_config = hamoru_core::policy::config::load_policy_config(&policy_path)?;
+        let policy_engine = hamoru_core::policy::DefaultPolicyEngine::new(policy_config);
+
+        ensure_hamoru_dir().await?;
+        let telemetry = create_telemetry_store().await?;
+
+        let result = hamoru_core::orchestrator::OrchestrationEngine::execute(
+            &engine,
+            &workflow,
+            &args.prompt,
+            &policy_engine,
+            &registry,
+            &telemetry,
+        )
+        .await?;
+
+        display_execution_report(&result);
+        return Ok(());
+    }
 
     // Resolve provider/model: direct (-m) or policy-based (-p / --tags)
     let (provider_id, model, tags) = if let Some(ref model_spec) = args.model {
@@ -430,6 +522,7 @@ async fn run_prompt(args: RunArgs) -> Result<(), HamoruError> {
         temperature: None,
         max_tokens: None,
         tools: None,
+        tool_choice: None,
         stream: !args.no_stream,
     };
 

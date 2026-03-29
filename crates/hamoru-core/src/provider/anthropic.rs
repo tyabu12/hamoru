@@ -42,6 +42,8 @@ struct AnthropicRequest {
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<AnthropicTool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -164,6 +166,12 @@ fn build_anthropic_request(request: &ChatRequest, default_max_tokens: u64) -> An
             .collect()
     });
 
+    let tool_choice = request.tool_choice.as_ref().map(|tc| match tc {
+        ToolChoice::Auto => serde_json::json!({"type": "auto"}),
+        ToolChoice::Required => serde_json::json!({"type": "any"}),
+        ToolChoice::Tool { name } => serde_json::json!({"type": "tool", "name": name}),
+    });
+
     AnthropicRequest {
         model: request.model.clone(),
         messages,
@@ -172,6 +180,7 @@ fn build_anthropic_request(request: &ChatRequest, default_max_tokens: u64) -> An
         temperature: request.temperature,
         stream: request.stream,
         tools,
+        tool_choice,
     }
 }
 
@@ -649,6 +658,7 @@ mod tests {
             temperature: Some(0.7),
             max_tokens: Some(100),
             tools: None,
+            tool_choice: None,
             stream: false,
         };
 
@@ -683,6 +693,7 @@ mod tests {
             temperature: None,
             max_tokens: None,
             tools: None,
+            tool_choice: None,
             stream: false,
         };
 
@@ -711,6 +722,7 @@ mod tests {
             temperature: None,
             max_tokens: Some(500),
             tools: None,
+            tool_choice: None,
             stream: false,
         };
 
@@ -732,6 +744,7 @@ mod tests {
             temperature: None,
             max_tokens: Some(256),
             tools: None,
+            tool_choice: None,
             stream: false,
         };
 
@@ -747,6 +760,7 @@ mod tests {
             temperature: None,
             max_tokens: None, // not specified
             tools: None,
+            tool_choice: None,
             stream: false,
         };
 
@@ -769,6 +783,7 @@ mod tests {
                 description: "Report task status".to_string(),
                 parameters: serde_json::json!({"type": "object"}),
             }]),
+            tool_choice: None,
             stream: false,
         };
 
@@ -776,6 +791,67 @@ mod tests {
         let tools = api_req.tools.expect("should have tools");
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name, "report_status");
+    }
+
+    #[test]
+    fn build_request_tool_choice_required() {
+        let request = ChatRequest {
+            model: "claude-sonnet-4-6".to_string(),
+            messages: vec![],
+            temperature: None,
+            max_tokens: Some(100),
+            tools: Some(vec![Tool {
+                name: "report_status".to_string(),
+                description: "Report status".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+            }]),
+            tool_choice: Some(ToolChoice::Required),
+            stream: false,
+        };
+
+        let api_req = build_anthropic_request(&request, DEFAULT_MAX_TOKENS);
+        let tc = api_req.tool_choice.expect("should have tool_choice");
+        assert_eq!(tc["type"], "any");
+    }
+
+    #[test]
+    fn build_request_tool_choice_specific_tool() {
+        let request = ChatRequest {
+            model: "claude-sonnet-4-6".to_string(),
+            messages: vec![],
+            temperature: None,
+            max_tokens: Some(100),
+            tools: Some(vec![Tool {
+                name: "report_status".to_string(),
+                description: "Report status".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+            }]),
+            tool_choice: Some(ToolChoice::Tool {
+                name: "report_status".to_string(),
+            }),
+            stream: false,
+        };
+
+        let api_req = build_anthropic_request(&request, DEFAULT_MAX_TOKENS);
+        let tc = api_req.tool_choice.expect("should have tool_choice");
+        assert_eq!(tc["type"], "tool");
+        assert_eq!(tc["name"], "report_status");
+    }
+
+    #[test]
+    fn build_request_no_tool_choice_omits_field() {
+        let request = ChatRequest {
+            model: "claude-sonnet-4-6".to_string(),
+            messages: vec![],
+            temperature: None,
+            max_tokens: Some(100),
+            tools: None,
+            tool_choice: None,
+            stream: false,
+        };
+
+        let api_req = build_anthropic_request(&request, DEFAULT_MAX_TOKENS);
+        assert!(api_req.tool_choice.is_none());
     }
 
     // -----------------------------------------------------------------------

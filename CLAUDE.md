@@ -121,8 +121,9 @@ Prefix the subject line with a single emoji that captures the spirit of the chan
 | 003 | Provider Abstraction Design — retry-as-decorator, custom SSE/NDJSON, factory DI | design-plan.md Phase 1 |
 | 004 | Telemetry SQLite Migration — spawn_blocking, MetricsCache design, plan scope | design-plan.md Phase 2 |
 | 005 | Policy Engine Design — sync trait, quality tier heuristic, scoring algorithm | design-plan.md Phase 3 |
+| 006 | Orchestration Engine Design — module structure, condition evaluation, warn-not-error | design-plan.md Phase 4a |
 
-Next available number: **006**. Increment sequentially from here.
+Next available number: **007**. Increment sequentially from here.
 
 ## Agent Configuration
 

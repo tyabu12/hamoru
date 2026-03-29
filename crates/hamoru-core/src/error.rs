@@ -14,9 +14,7 @@ use crate::provider::types::TokenUsage;
 /// Defined here (rather than in `orchestrator/`) because `HamoruError::MidWorkflowFailure`
 /// references it, and placing it in `orchestrator/` would create a circular dependency.
 // TODO: Consider moving to a shared `types` module if more cross-cutting types emerge.
-// TODO(Phase 4): Replace derived `Debug` with a custom impl that omits `output` field
-//   to prevent LLM response content leaking via error Display/Debug. See design-plan.md §5.4.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone, Serialize)]
 pub struct StepResult {
     /// Name of the step that was executed.
     pub step_name: String,
@@ -30,6 +28,23 @@ pub struct StepResult {
     pub latency_ms: u64,
     /// Model that was used for this step.
     pub model_used: String,
+    /// Policy that selected this model.
+    pub policy_applied: String,
+}
+
+// Custom Debug omits `output` to prevent LLM response content leaking via Debug/Display.
+impl fmt::Debug for StepResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StepResult")
+            .field("step_name", &self.step_name)
+            .field("output", &"<redacted>")
+            .field("tokens", &self.tokens)
+            .field("cost", &self.cost)
+            .field("latency_ms", &self.latency_ms)
+            .field("model_used", &self.model_used)
+            .field("policy_applied", &self.policy_applied)
+            .finish()
+    }
 }
 
 /// Unified error type for all hamoru operations.
@@ -104,7 +119,30 @@ pub enum HamoruError {
     },
 
     // --- Orchestration errors (Phase 4) ---
+    /// Workflow YAML file is invalid or cannot be parsed.
+    #[error("Invalid workflow '{workflow}': {reason}")]
+    WorkflowValidationError {
+        /// Workflow name or path.
+        workflow: String,
+        /// Human-readable reason.
+        reason: String,
+    },
+
+    /// A workflow step's condition evaluation failed.
+    #[error("Condition evaluation failed at step '{step}': {reason}")]
+    ConditionEvaluationFailed {
+        /// Step where evaluation failed.
+        step: String,
+        /// Human-readable reason with guidance.
+        reason: String,
+    },
+
     /// Workflow reached its maximum iteration count.
+    ///
+    /// Note: In the default orchestrator implementation, max iterations triggers a
+    /// `tracing::warn!()` and returns `Ok(ExecutionResult)` with
+    /// `TerminationReason::MaxIterationsReached` (per design-plan.md §11.3).
+    /// This error variant is retained for potential future strict-mode use.
     #[error("Workflow '{workflow}' reached max iterations ({max})")]
     MaxIterationsReached {
         /// Workflow name.
@@ -328,6 +366,60 @@ fn redact_query_param(msg: &str, param: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workflow_validation_error_includes_workflow_and_reason() {
+        let e = HamoruError::WorkflowValidationError {
+            workflow: "generate-and-review".to_string(),
+            reason: "Step 'review' references unknown target 'nonexistent'".to_string(),
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("generate-and-review"));
+        assert!(msg.contains("nonexistent"));
+    }
+
+    #[test]
+    fn condition_evaluation_failed_includes_step_and_guidance() {
+        let e = HamoruError::ConditionEvaluationFailed {
+            step: "review".to_string(),
+            reason:
+                "No status found. The model did not call report_status or include a STATUS line."
+                    .to_string(),
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("review"));
+        assert!(msg.contains("report_status"));
+    }
+
+    #[test]
+    fn workflow_cost_exceeded_includes_amounts() {
+        let e = HamoruError::WorkflowCostExceeded {
+            workflow: "gen-review".to_string(),
+            spent: 0.52,
+            limit: 0.50,
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("0.52"));
+        assert!(msg.contains("0.50"));
+    }
+
+    #[test]
+    fn step_result_debug_omits_output() {
+        let step = StepResult {
+            step_name: "generate".to_string(),
+            output: "SECRET LLM OUTPUT".to_string(),
+            tokens: TokenUsage::default(),
+            cost: 0.01,
+            latency_ms: 100,
+            model_used: "test-model".to_string(),
+            policy_applied: "cost-optimized".to_string(),
+        };
+        let debug = format!("{:?}", step);
+        assert!(!debug.contains("SECRET LLM OUTPUT"));
+        assert!(debug.contains("redacted"));
+        assert!(debug.contains("generate"));
+        assert!(debug.contains("cost-optimized"));
+    }
 
     #[test]
     fn sanitize_strips_anthropic_api_key() {

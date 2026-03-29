@@ -1251,18 +1251,18 @@ hamoru run --tags review,security "Check for vulnerabilities"
 **Goal**: Multi-step workflow sequential execution
 
 **Deliverables:**
-- [ ] Workflow YAML parser
-- [ ] Sequential step execution engine
-- [ ] Condition evaluation v1 (STATUS line parsing), loops, max iterations — get it working first
-- [ ] Condition evaluation v2 (Tool Calling) — Define `report_status(status, reason)` tool and force Evaluator to call it. Resolves v1 instability with structured evaluation
-- [ ] Workflow YAML `condition_mode: status_line | tool_calling` selectable (default: `tool_calling`)
-- [ ] Per-workflow cost cap (`max_cost`)
-- [ ] Inter-step context passing (`{previous_output}`, `{task}`)
-- [ ] `{previous_output}` User Role message separation (injection mitigation)
-- [ ] Step-level ContextPolicy support (`context_policy: keep_all | keep_last_n` — anticipating Layer 5 requirements. Section 6.4.1)
-- [ ] Policy Engine-based auto model selection per step
-- [ ] Workflow execution report generation
-- [ ] `hamoru run -w <workflow>` implementation
+- [x] Workflow YAML parser
+- [x] Sequential step execution engine
+- [x] Condition evaluation v1 (STATUS line parsing), loops, max iterations — get it working first
+- [x] Condition evaluation v2 (Tool Calling) — Define `report_status(status, reason)` tool and force Evaluator to call it. Resolves v1 instability with structured evaluation
+- [x] Workflow YAML `condition_mode: status_line | tool_calling` selectable (default: `tool_calling`)
+- [x] Per-workflow cost cap (`max_cost`)
+- [x] Inter-step context passing (`{previous_output}`, `{task}`)
+- [x] `{previous_output}` User Role message separation (injection mitigation)
+- [x] Step-level ContextPolicy support (`context_policy: keep_all | keep_last_n` — anticipating Layer 5 requirements. Section 6.4.1)
+- [x] Policy Engine-based auto model selection per step
+- [x] Workflow execution report generation
+- [x] `hamoru run -w <workflow>` implementation
 
 **Completion criteria:**
 ```bash
