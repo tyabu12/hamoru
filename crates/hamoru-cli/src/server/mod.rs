@@ -3,6 +3,10 @@
 //! Routes requests through hamoru's provider/policy/orchestration layers
 //! and returns responses in the OpenAI wire format.
 
+// Wired into the router in commit 7 (middleware ordering).
+#[allow(dead_code)]
+pub mod auth;
+
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
