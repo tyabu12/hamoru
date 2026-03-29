@@ -23,6 +23,10 @@ jobs:
       test-failed: ${{ steps.test.outputs.failed }}
       test-ignored: ${{ steps.test.outputs.ignored }}
       test-parse-error: ${{ steps.test.outputs.parse_error }}
+      smoke-passed: ${{ steps.smoke.outputs.passed }}
+      smoke-failed: ${{ steps.smoke.outputs.failed }}
+      smoke-skipped: ${{ steps.smoke.outputs.skipped }}
+      smoke-parse-error: ${{ steps.smoke.outputs.parse_error }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -75,7 +79,24 @@ jobs:
       # API calls (avoids accidental secret usage or network exfiltration).
       # Do NOT remove --offline without reviewing secret/network implications.
       - name: Smoke test (offline)
-        run: bash scripts/smoke-test.sh --offline --verbose
+        id: smoke
+        run: |
+          OUTPUT=$(bash scripts/smoke-test.sh --offline --verbose 2>&1) || SMOKE_EXIT=$?
+          echo "$OUTPUT"
+
+          # Parse smoke-test summary (single line — grep suffices; cargo test uses
+          # awk because it aggregates across multiple workspace crates)
+          SUMMARY=$(echo "$OUTPUT" | grep -E '^# [0-9]+ passed,' | tail -1)
+          if [ -z "$SUMMARY" ]; then
+            echo "parse_error=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "parse_error=false" >> "$GITHUB_OUTPUT"
+            echo "passed=$(echo "$SUMMARY" | grep -oE '^# [0-9]+' | grep -oE '[0-9]+')" >> "$GITHUB_OUTPUT"
+            echo "failed=$(echo "$SUMMARY" | grep -oE '[0-9]+ failed' | grep -oE '[0-9]+')" >> "$GITHUB_OUTPUT"
+            echo "skipped=$(echo "$SUMMARY" | grep -oE '[0-9]+ skipped' | grep -oE '[0-9]+')" >> "$GITHUB_OUTPUT"
+          fi
+
+          exit ${SMOKE_EXIT:-0}
         env:
           HAMORU_BIN: target/debug/hamoru-cli
 
@@ -202,6 +223,10 @@ jobs:
           TEST_FAILED: ${{ needs.check.outputs.test-failed }}
           TEST_IGNORED: ${{ needs.check.outputs.test-ignored }}
           TEST_PARSE_ERROR: ${{ needs.check.outputs.test-parse-error }}
+          SMOKE_PASSED: ${{ needs.check.outputs.smoke-passed }}
+          SMOKE_FAILED: ${{ needs.check.outputs.smoke-failed }}
+          SMOKE_SKIPPED: ${{ needs.check.outputs.smoke-skipped }}
+          SMOKE_PARSE_ERROR: ${{ needs.check.outputs.smoke-parse-error }}
           PR_COV: ${{ steps.cov.outputs.pct }}
           BASELINE_PCT: ${{ steps.baseline.outputs.pct }}
           CI_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -238,6 +263,33 @@ jobs:
                   echo "**${PASSED} passed, ${FAILED} FAILED, ${IGNORED} ignored**"
                 fi
               fi
+            fi
+
+            # Smoke test results
+            echo ""
+            if [ -z "$SMOKE_PARSE_ERROR" ]; then
+              echo "### Smoke Test"
+              echo ""
+              echo "> Smoke test did not run."
+            elif [ "$SMOKE_PARSE_ERROR" = "true" ]; then
+              echo "### Smoke Test"
+              echo ""
+              echo "> Could not parse smoke test output. Format may have changed."
+            else
+              S_PASSED=$(echo "${SMOKE_PASSED:-0}" | grep -oE '^[0-9]+$' || echo "0")
+              S_FAILED=$(echo "${SMOKE_FAILED:-0}" | grep -oE '^[0-9]+$' || echo "0")
+              S_SKIPPED=$(echo "${SMOKE_SKIPPED:-0}" | grep -oE '^[0-9]+$' || echo "0")
+
+              echo "### Smoke Test"
+              echo ""
+              LINE="${S_PASSED} passed"
+              if [ "$S_FAILED" != "0" ]; then
+                LINE="${LINE}, ${S_FAILED} FAILED"
+              fi
+              if [ "$S_SKIPPED" != "0" ]; then
+                LINE="${LINE}, ${S_SKIPPED} skipped"
+              fi
+              echo "**${LINE}**"
             fi
 
             # Coverage with delta
