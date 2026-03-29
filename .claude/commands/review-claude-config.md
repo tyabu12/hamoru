@@ -3,7 +3,7 @@ description: Monthly health check of all Claude Code configuration files. Read-o
 allowed-tools: Read, Glob, Grep, WebSearch, Bash, Agent
 ---
 
-# /review-config
+# /review-claude-config
 
 Monthly health check for all Claude Code configuration files. Recommended frequency: once per month.
 
@@ -150,7 +150,7 @@ Produce a single structured report:
 
 **Date**: YYYY-MM-DD
 **Project**: hamoru
-**Reviewer**: Claude Code /review-config
+**Reviewer**: Claude Code /review-claude-config
 **Review iterations**: N
 
 ## Summary
