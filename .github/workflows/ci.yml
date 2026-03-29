@@ -192,6 +192,8 @@ jobs:
       - name: Parse smoke test results
         id: report
         if: ${{ !cancelled() }}
+        env:
+          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
         run: |
           SUMMARY=$(grep -E '^# [0-9]+ passed,' /tmp/ollama-smoke.log | tail -1)
           if [ -z "$SUMMARY" ]; then
@@ -207,7 +209,7 @@ jobs:
             | sed 's/run -m local://;s/ (ollama)//')
           echo "model=${MODEL:-unknown}" >> "$GITHUB_OUTPUT"
 
-          echo "job_outcome=${{ steps.smoke.outcome }}" >> "$GITHUB_OUTPUT"
+          echo "job_outcome=$SMOKE_OUTCOME" >> "$GITHUB_OUTPUT"
 
   security:
     name: Security
@@ -521,3 +523,215 @@ jobs:
           valColorRange: ${{ steps.cov.outputs.pct }}
           minColorRange: 0
           maxColorRange: 100
+
+  discord-notify:
+    name: Discord Notify
+    needs: [check, ollama-smoke, security]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # SECURITY: Runs on main pushes and PRs. Fork PRs cannot access
+    # DISCORD_WEBHOOK_URL (GitHub blocks secrets on pull_request from forks).
+    # The empty-URL guard in the script provides defense in depth.
+    if: >-
+      !cancelled()
+      && (github.event_name == 'pull_request'
+      || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+    steps:
+      # SECURITY: Do NOT add actions/checkout here. This job has access to
+      # DISCORD_WEBHOOK_URL and must never execute repository code.
+      - name: Send Discord notification
+        shell: bash
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          CHECK_RESULT: ${{ needs.check.result }}
+          TEST_PASSED: ${{ needs.check.outputs.test-passed }}
+          TEST_FAILED: ${{ needs.check.outputs.test-failed }}
+          TEST_IGNORED: ${{ needs.check.outputs.test-ignored }}
+          TEST_PARSE_ERROR: ${{ needs.check.outputs.test-parse-error }}
+          SMOKE_PASSED: ${{ needs.check.outputs.smoke-passed }}
+          SMOKE_FAILED: ${{ needs.check.outputs.smoke-failed }}
+          SMOKE_SKIPPED: ${{ needs.check.outputs.smoke-skipped }}
+          SMOKE_PARSE_ERROR: ${{ needs.check.outputs.smoke-parse-error }}
+          OLLAMA_PASSED: ${{ needs.ollama-smoke.outputs.smoke-passed }}
+          OLLAMA_FAILED: ${{ needs.ollama-smoke.outputs.smoke-failed }}
+          OLLAMA_SKIPPED: ${{ needs.ollama-smoke.outputs.smoke-skipped }}
+          OLLAMA_PARSE_ERROR: ${{ needs.ollama-smoke.outputs.smoke-parse-error }}
+          OLLAMA_MODEL: ${{ needs.ollama-smoke.outputs.smoke-model }}
+          OLLAMA_JOB_OUTCOME: ${{ needs.ollama-smoke.outputs.job-outcome }}
+          SECURITY_RESULT: ${{ needs.security.result }}
+          EVENT_NAME: ${{ github.event_name }}
+          COMMIT_SHA: ${{ github.sha }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          # Skip if webhook URL is not configured
+          if [ -z "$DISCORD_WEBHOOK_URL" ]; then
+            echo "::warning::DISCORD_WEBHOOK_URL not configured; skipping notification"
+            exit 0
+          fi
+
+          # NOTE: add_line modifies global LINES. Do not call inside subshells or pipes.
+          add_line() { LINES="${LINES}${1}"$'\n'; }
+          LINES=""
+          HAS_FAILURE=false
+          HAS_WARNING=false
+
+          # --- Test results ---
+          if [ "$CHECK_RESULT" = "skipped" ] || [ "$CHECK_RESULT" = "cancelled" ]; then
+            add_line ":warning: **Tests**: ${CHECK_RESULT}"
+            HAS_WARNING=true
+          elif [ -z "$TEST_PARSE_ERROR" ]; then
+            add_line ":warning: **Tests**: did not run"
+            HAS_WARNING=true
+          elif [ "$TEST_PARSE_ERROR" = "true" ]; then
+            add_line ":warning: **Tests**: parse error"
+            HAS_WARNING=true
+          else
+            T_PASSED=$(echo "${TEST_PASSED:-0}" | grep -oE '^[0-9]+$' || echo "0")
+            T_FAILED=$(echo "${TEST_FAILED:-0}" | grep -oE '^[0-9]+$' || echo "0")
+            T_IGNORED=$(echo "${TEST_IGNORED:-0}" | grep -oE '^[0-9]+$' || echo "0")
+            if [ "$T_FAILED" = "0" ]; then
+              add_line ":white_check_mark: **Tests**: ${T_PASSED} passed, ${T_IGNORED} ignored"
+            else
+              add_line ":x: **Tests**: ${T_PASSED} passed, **${T_FAILED} failed**, ${T_IGNORED} ignored"
+              HAS_FAILURE=true
+            fi
+          fi
+
+          # --- Smoke test ---
+          if [ -z "$SMOKE_PARSE_ERROR" ]; then
+            add_line ":warning: **Smoke**: did not run"
+            HAS_WARNING=true
+          elif [ "$SMOKE_PARSE_ERROR" = "true" ]; then
+            add_line ":warning: **Smoke**: parse error"
+            HAS_WARNING=true
+          else
+            S_PASSED=$(echo "${SMOKE_PASSED:-0}" | grep -oE '^[0-9]+$' || echo "0")
+            S_FAILED=$(echo "${SMOKE_FAILED:-0}" | grep -oE '^[0-9]+$' || echo "0")
+            S_SKIPPED=$(echo "${SMOKE_SKIPPED:-0}" | grep -oE '^[0-9]+$' || echo "0")
+            S_LINE="${S_PASSED} passed"
+            [ "$S_FAILED" != "0" ] && S_LINE="${S_LINE}, **${S_FAILED} failed**"
+            [ "$S_SKIPPED" != "0" ] && S_LINE="${S_LINE}, ${S_SKIPPED} skipped"
+            if [ "$S_FAILED" = "0" ]; then
+              add_line ":white_check_mark: **Smoke**: ${S_LINE}"
+            else
+              add_line ":x: **Smoke**: ${S_LINE}"
+              HAS_FAILURE=true
+            fi
+          fi
+
+          # --- Ollama smoke test (advisory — warning, not failure) ---
+          if [ -z "$OLLAMA_PARSE_ERROR" ] && [ "$OLLAMA_JOB_OUTCOME" = "failure" ]; then
+            add_line ":warning: **Ollama**: job failed (no output)"
+            HAS_WARNING=true
+          elif [ -z "$OLLAMA_PARSE_ERROR" ]; then
+            add_line ":warning: **Ollama**: did not run"
+            HAS_WARNING=true
+          elif [ "$OLLAMA_PARSE_ERROR" = "true" ]; then
+            add_line ":warning: **Ollama**: parse error"
+            HAS_WARNING=true
+          else
+            O_PASSED=$(echo "${OLLAMA_PASSED:-0}" | grep -oE '^[0-9]+$' || echo "0")
+            O_FAILED=$(echo "${OLLAMA_FAILED:-0}" | grep -oE '^[0-9]+$' || echo "0")
+            O_SKIPPED=$(echo "${OLLAMA_SKIPPED:-0}" | grep -oE '^[0-9]+$' || echo "0")
+            O_LINE="${O_PASSED} passed"
+            [ "$O_FAILED" != "0" ] && O_LINE="${O_LINE}, **${O_FAILED} failed**"
+            [ "$O_SKIPPED" != "0" ] && O_LINE="${O_LINE}, ${O_SKIPPED} skipped"
+            [ -n "$OLLAMA_MODEL" ] && [ "$OLLAMA_MODEL" != "unknown" ] && O_LINE="${O_LINE} (${OLLAMA_MODEL})"
+            if [ "$O_FAILED" = "0" ]; then
+              add_line ":white_check_mark: **Ollama**: ${O_LINE}"
+            else
+              add_line ":warning: **Ollama**: ${O_LINE}"
+              HAS_WARNING=true
+            fi
+          fi
+
+          # --- Security ---
+          # NOTE: Advisory step uses continue-on-error, so security job reports
+          # "success" even when advisories fail. Only license/ban/source failures
+          # trigger "failure" here.
+          if [ "$SECURITY_RESULT" = "success" ]; then
+            add_line ":white_check_mark: **Security**: passed"
+          elif [ "$SECURITY_RESULT" = "failure" ]; then
+            add_line ":x: **Security**: failed"
+            HAS_FAILURE=true
+          elif [ "$SECURITY_RESULT" = "skipped" ]; then
+            add_line ":warning: **Security**: skipped"
+            HAS_WARNING=true
+          elif [ "$SECURITY_RESULT" = "cancelled" ]; then
+            add_line ":warning: **Security**: cancelled"
+            HAS_WARNING=true
+          else
+            add_line ":warning: **Security**: unknown"
+            HAS_WARNING=true
+          fi
+
+          # --- Determine color ---
+          if [ "$HAS_FAILURE" = "true" ]; then
+            COLOR=15027531  # 0xe5534b red
+          elif [ "$HAS_WARNING" = "true" ]; then
+            COLOR=13801762  # 0xd29922 orange
+          else
+            COLOR=3056707   # 0x2ea043 green
+          fi
+
+          # --- Build payload with jq (safe JSON escaping) ---
+          RUN_URL="${SERVER_URL}/${REPO}/actions/runs/${RUN_ID}"
+
+          # Event-specific title and link
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            EMBED_TITLE="#${PR_NUMBER} ${PR_TITLE}"
+            EMBED_URL="${SERVER_URL}/${REPO}/pull/${PR_NUMBER}"
+          else
+            SHORT_SHA="${COMMIT_SHA:0:7}"
+            # Bash parameter expansion — no pipe, avoids SIGPIPE under pipefail + set -e
+            FIRST_LINE="${COMMIT_MSG%%$'\n'*}"
+            EMBED_TITLE="[${SHORT_SHA}] ${FIRST_LINE}"
+            EMBED_URL="${SERVER_URL}/${REPO}/commit/${COMMIT_SHA}"
+          fi
+
+          # Truncate description to stay within Discord's 4096-char embed limit
+          DESCRIPTION="${LINES}"$'\n'"[View CI run](${RUN_URL})"
+          if [ ${#DESCRIPTION} -gt 4000 ]; then
+            DESCRIPTION="${DESCRIPTION:0:3997}..."
+          fi
+
+          if ! PAYLOAD=$(jq -n \
+            --arg title "$EMBED_TITLE" \
+            --arg description "$DESCRIPTION" \
+            --argjson color "$COLOR" \
+            --arg embed_url "$EMBED_URL" \
+            '{
+              embeds: [{
+                title: ($title | if length > 256 then .[0:253] + "..." else . end),
+                url: $embed_url,
+                description: $description,
+                color: $color,
+                footer: { text: "GitHub Actions" }
+              }],
+              allowed_mentions: { parse: [] }
+            }'); then
+            echo "::warning::jq failed to build payload"
+            exit 0
+          fi
+
+          if [ -z "$PAYLOAD" ]; then
+            echo "::warning::Empty payload; skipping notification"
+            exit 0
+          fi
+
+          # --- Send to Discord ---
+          # SECURITY: stderr suppressed to prevent webhook URL leakage in error messages.
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            --connect-timeout 10 --max-time 30 \
+            -H "Content-Type: application/json" \
+            --data-raw "$PAYLOAD" \
+            "$DISCORD_WEBHOOK_URL" 2>/dev/null) || true
+
+          if [ -z "$HTTP_CODE" ] || ! [[ "$HTTP_CODE" =~ ^[0-9]+$ ]] || [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            echo "::warning::Discord webhook returned HTTP ${HTTP_CODE:-timeout}"
+          fi
