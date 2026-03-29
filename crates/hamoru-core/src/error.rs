@@ -279,22 +279,37 @@ pub fn sanitize_error(
 fn sanitize_message(msg: &str) -> String {
     let mut result = msg.to_string();
 
-    // Token-prefix patterns (alphanum + dash/underscore/dot body)
+    // Token-prefix patterns (alphanum + dash/underscore/dot body).
+    // More-specific prefixes first: sk-ant- before sk- (substring ordering).
     let token_char = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.';
-    // Anthropic API keys: sk-ant-... (most specific prefix first)
-    result = redact_pattern(&result, "sk-ant-", &token_char, 10);
-    // Generic sk- keys (OpenAI-style): sk- followed by alphanum
-    result = redact_pattern(&result, "sk-", &token_char, 10);
+    result = redact_pattern(&result, "sk-ant-", &token_char, 4);
+    result = redact_pattern(&result, "sk-", &token_char, 6);
 
-    // Auth scheme patterns (non-whitespace body)
+    // Auth scheme patterns (non-whitespace body).
+    // Bearer keeps min_len=10: the Unauthorized error contains static text
+    // "Bearer header." (7 chars) which must not be redacted.
     let non_ws = |c: char| !c.is_ascii_whitespace();
-    // Bearer tokens
     result = redact_pattern(&result, "Bearer ", &non_ws, 10);
+    result = redact_pattern(&result, "Basic ", &non_ws, 4);
+
+    // Header value patterns (case-insensitive)
+    result = redact_header_value(&result, "x-api-key");
 
     // URL-embedded credentials: ://user:pass@
     result = redact_url_credentials(&result);
-    // api_key=... query parameters
-    result = redact_query_param(&result, "api_key=");
+
+    // Query parameters: no min-length (param name is sufficient signal).
+    // Intentional over-redaction tradeoff for security.
+    // IMPORTANT: access_token= MUST precede token= (substring match ordering).
+    for param in &[
+        "api_key=",
+        "access_token=",
+        "token=",
+        "secret=",
+        "password=",
+    ] {
+        result = redact_query_param(&result, param);
+    }
 
     result
 }
@@ -333,6 +348,66 @@ fn redact_pattern(
     result
 }
 
+/// Redacts header values case-insensitively.
+///
+/// Matches `header_name` (case-insensitive), skips `:` and optional whitespace,
+/// then redacts the non-whitespace token body if it meets `min_len`.
+/// Uses a lowercase copy for position-finding; output preserves original casing.
+fn redact_header_value(msg: &str, header_name: &str) -> String {
+    let lower = msg.to_ascii_lowercase();
+    let lower_name = header_name.to_ascii_lowercase();
+    let mut result = String::with_capacity(msg.len());
+    let mut remaining = &lower[..];
+    let mut original_remaining = msg;
+
+    while let Some(pos) = remaining.find(&lower_name[..]) {
+        // Emit text before the match from the original (preserves casing)
+        result.push_str(&original_remaining[..pos]);
+        let after_name = pos + lower_name.len();
+        let orig_after = &original_remaining[after_name..];
+        let low_after = &remaining[after_name..];
+
+        // Expect ':' immediately after header name
+        if !low_after.starts_with(':') {
+            // Not a header pattern — preserve and continue
+            result.push_str(&original_remaining[pos..after_name]);
+            remaining = &remaining[after_name..];
+            original_remaining = &original_remaining[after_name..];
+            continue;
+        }
+
+        // Skip ':' and optional whitespace (ASCII-only: ' ' and '\t' are single-byte)
+        let colon_plus = 1; // the ':'
+        let ws_len = orig_after[colon_plus..]
+            .bytes()
+            .take_while(|b| *b == b' ' || *b == b'\t')
+            .count();
+        let value_start = colon_plus + ws_len;
+        let value_str = &orig_after[value_start..];
+
+        // Consume non-whitespace characters as the token body
+        let token_end = value_str
+            .find(|c: char| c.is_ascii_whitespace())
+            .unwrap_or(value_str.len());
+        let token_body = &value_str[..token_end];
+
+        if token_end >= 4 && !token_body.starts_with("[REDACTED]") {
+            // Emit header name + colon + whitespace from original, then redact the value
+            result.push_str(&original_remaining[pos..after_name + value_start]);
+            result.push_str("[REDACTED]");
+        } else {
+            // Too short or already redacted — preserve everything
+            result.push_str(&original_remaining[pos..after_name + value_start + token_end]);
+        }
+
+        let skip = after_name + value_start + token_end;
+        remaining = &remaining[skip..];
+        original_remaining = &original_remaining[skip..];
+    }
+    result.push_str(original_remaining);
+    result
+}
+
 /// Redacts URL-embedded credentials: `://user:pass@` → `://[REDACTED]@`.
 fn redact_url_credentials(msg: &str) -> String {
     let mut result = String::with_capacity(msg.len());
@@ -365,6 +440,10 @@ fn redact_url_credentials(msg: &str) -> String {
 }
 
 /// Redacts a query parameter value: `api_key=secret` → `[REDACTED]`.
+///
+/// No minimum length — the parameter name itself is sufficient signal that the value
+/// is a credential. This intentionally over-redacts: `token=csrf_abc` would be redacted
+/// even if the value is not a secret. Security over debuggability.
 fn redact_query_param(msg: &str, param: &str) -> String {
     let mut result = String::with_capacity(msg.len());
     let mut remaining = msg;
@@ -495,5 +574,144 @@ mod tests {
         let original = std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "refused");
         let sanitized = sanitize_error(original);
         assert_eq!(sanitized.to_string(), "refused");
+    }
+
+    // --- Short token threshold tests ---
+
+    #[test]
+    fn sanitize_sk_boundary_6_char_body_redacted() {
+        // "test12" = 6 chars after "sk-", meets min_len=6
+        assert_eq!(sanitize_message("key: sk-test12"), "key: [REDACTED]");
+    }
+
+    #[test]
+    fn sanitize_sk_boundary_5_char_body_preserved() {
+        // "test1" = 5 chars after "sk-", below min_len=6
+        assert_eq!(sanitize_message("key: sk-test1"), "key: sk-test1");
+    }
+
+    #[test]
+    fn sanitize_sk_ant_boundary_4_char_body_redacted() {
+        // "abcd" = 4 chars after "sk-ant-", meets min_len=4
+        assert_eq!(sanitize_message("key: sk-ant-abcd"), "key: [REDACTED]");
+    }
+
+    #[test]
+    fn sanitize_sk_ant_boundary_3_char_body_caught_by_sk_fallback() {
+        // "abc" = 3 chars after "sk-ant-" (below min_len=4), but "ant-abc" = 7 chars
+        // after "sk-" (meets min_len=6), so the sk- pattern catches it as a fallback
+        assert_eq!(sanitize_message("key: sk-ant-abc"), "key: [REDACTED]");
+    }
+
+    #[test]
+    fn sanitize_empty_token_body_preserved() {
+        // No chars after "sk-" at end of string
+        assert_eq!(sanitize_message("ends with sk-"), "ends with sk-");
+    }
+
+    // --- Bearer / Basic auth tests ---
+
+    #[test]
+    fn sanitize_bearer_short_preserved() {
+        // "header." = 7 chars, below min_len=10 for Bearer
+        assert_eq!(sanitize_message("Bearer header."), "Bearer header.");
+    }
+
+    #[test]
+    fn sanitize_bearer_10_char_redacted() {
+        // "abcdefghij" = 10 chars, meets min_len=10
+        assert_eq!(sanitize_message("Bearer abcdefghij"), "[REDACTED]");
+    }
+
+    #[test]
+    fn sanitize_basic_auth_4_char_redacted() {
+        // "YTpi" = 4 chars, meets min_len=4 for Basic
+        assert_eq!(sanitize_message("Basic YTpi"), "[REDACTED]");
+    }
+
+    #[test]
+    fn sanitize_basic_auth_3_char_preserved() {
+        // "abc" = 3 chars, below min_len=4 for Basic
+        assert_eq!(sanitize_message("Basic abc"), "Basic abc");
+    }
+
+    // --- x-api-key header tests ---
+
+    #[test]
+    fn sanitize_header_x_api_key_with_space() {
+        assert_eq!(
+            sanitize_message("x-api-key: mykey1234"),
+            "x-api-key: [REDACTED]"
+        );
+    }
+
+    #[test]
+    fn sanitize_header_x_api_key_no_space() {
+        assert_eq!(
+            sanitize_message("x-api-key:mykey1234"),
+            "x-api-key:[REDACTED]"
+        );
+    }
+
+    #[test]
+    fn sanitize_header_x_api_key_mixed_case() {
+        assert_eq!(
+            sanitize_message("X-Api-Key: mykey1234"),
+            "X-Api-Key: [REDACTED]"
+        );
+    }
+
+    #[test]
+    fn sanitize_header_x_api_key_short_preserved() {
+        // "abc" = 3 chars, below min_len=4
+        assert_eq!(sanitize_message("x-api-key: abc"), "x-api-key: abc");
+    }
+
+    // --- Query parameter tests ---
+
+    #[test]
+    fn sanitize_query_param_token() {
+        assert_eq!(sanitize_message("?token=secret123&x=1"), "?[REDACTED]&x=1");
+    }
+
+    #[test]
+    fn sanitize_query_param_secret() {
+        assert_eq!(sanitize_message("secret=hunter2"), "[REDACTED]");
+    }
+
+    #[test]
+    fn sanitize_query_param_password() {
+        assert_eq!(sanitize_message("password=p4ss&u=1"), "[REDACTED]&u=1");
+    }
+
+    #[test]
+    fn sanitize_query_param_access_token() {
+        assert_eq!(sanitize_message("access_token=tok123"), "[REDACTED]");
+    }
+
+    #[test]
+    fn sanitize_query_param_access_token_before_token_ordering() {
+        // access_token= must be processed before token= to avoid
+        // "?access_[REDACTED]" from the token= substring match
+        assert_eq!(sanitize_message("?access_token=foo"), "?[REDACTED]");
+    }
+
+    // --- Cross-pattern and edge case tests ---
+
+    #[test]
+    fn sanitize_double_redaction_guard() {
+        // sk-ant- pass redacts the key, then Bearer pass should
+        // see "[REDACTED]" and skip (not double-redact)
+        assert_eq!(
+            sanitize_message("Bearer sk-ant-api03-xxxxxxxxxxxx"),
+            "Bearer [REDACTED]"
+        );
+    }
+
+    #[test]
+    fn sanitize_unauthorized_error_text_safe() {
+        // The static Unauthorized error text must not be corrupted
+        let msg = "Authentication failed: bad key. Provide a valid API key via Authorization: Bearer header.";
+        assert_eq!(sanitize_message(msg), msg);
     }
 }
