@@ -529,12 +529,13 @@ jobs:
     needs: [check, ollama-smoke, security]
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    # SECURITY: Only runs on main branch pushes. This prevents fork PRs from
-    # accessing DISCORD_WEBHOOK_URL. Do not weaken this condition.
+    # SECURITY: Runs on main pushes and PRs. Fork PRs cannot access
+    # DISCORD_WEBHOOK_URL (GitHub blocks secrets on pull_request from forks).
+    # The empty-URL guard in the script provides defense in depth.
     if: >-
       !cancelled()
-      && github.event_name == 'push'
-      && github.ref == 'refs/heads/main'
+      && (github.event_name == 'pull_request'
+      || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
     steps:
       # SECURITY: Do NOT add actions/checkout here. This job has access to
       # DISCORD_WEBHOOK_URL and must never execute repository code.
@@ -558,8 +559,11 @@ jobs:
           OLLAMA_MODEL: ${{ needs.ollama-smoke.outputs.smoke-model }}
           OLLAMA_JOB_OUTCOME: ${{ needs.ollama-smoke.outputs.job-outcome }}
           SECURITY_RESULT: ${{ needs.security.result }}
+          EVENT_NAME: ${{ github.event_name }}
           COMMIT_SHA: ${{ github.sha }}
           COMMIT_MSG: ${{ github.event.head_commit.message }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
           SERVER_URL: ${{ github.server_url }}
@@ -676,11 +680,19 @@ jobs:
           fi
 
           # --- Build payload with jq (safe JSON escaping) ---
-          SHORT_SHA="${COMMIT_SHA:0:7}"
-          COMMIT_URL="${SERVER_URL}/${REPO}/commit/${COMMIT_SHA}"
           RUN_URL="${SERVER_URL}/${REPO}/actions/runs/${RUN_ID}"
-          # Bash parameter expansion — no pipe, avoids SIGPIPE under pipefail + set -e
-          FIRST_LINE="${COMMIT_MSG%%$'\n'*}"
+
+          # Event-specific title and link
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            EMBED_TITLE="#${PR_NUMBER} ${PR_TITLE}"
+            EMBED_URL="${SERVER_URL}/${REPO}/pull/${PR_NUMBER}"
+          else
+            SHORT_SHA="${COMMIT_SHA:0:7}"
+            # Bash parameter expansion — no pipe, avoids SIGPIPE under pipefail + set -e
+            FIRST_LINE="${COMMIT_MSG%%$'\n'*}"
+            EMBED_TITLE="[${SHORT_SHA}] ${FIRST_LINE}"
+            EMBED_URL="${SERVER_URL}/${REPO}/commit/${COMMIT_SHA}"
+          fi
 
           # Truncate description to stay within Discord's 4096-char embed limit
           DESCRIPTION="${LINES}"$'\n'"[View CI run](${RUN_URL})"
@@ -689,14 +701,14 @@ jobs:
           fi
 
           if ! PAYLOAD=$(jq -n \
-            --arg title "[$SHORT_SHA] $FIRST_LINE" \
+            --arg title "$EMBED_TITLE" \
             --arg description "$DESCRIPTION" \
             --argjson color "$COLOR" \
-            --arg commit_url "$COMMIT_URL" \
+            --arg embed_url "$EMBED_URL" \
             '{
               embeds: [{
                 title: ($title | if length > 256 then .[0:253] + "..." else . end),
-                url: $commit_url,
+                url: $embed_url,
                 description: $description,
                 color: $color,
                 footer: { text: "GitHub Actions" }
