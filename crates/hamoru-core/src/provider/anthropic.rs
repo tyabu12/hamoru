@@ -141,6 +141,17 @@ fn build_anthropic_request(request: &ChatRequest, default_max_tokens: u64) -> An
                                 "url": url,
                             }
                         }),
+                        ContentPart::ToolUse { id, name, input } => serde_json::json!({
+                            "type": "tool_use",
+                            "id": id,
+                            "name": name,
+                            "input": input,
+                        }),
+                        ContentPart::ToolResult { tool_use_id, content } => serde_json::json!({
+                            "type": "tool_result",
+                            "tool_use_id": tool_use_id,
+                            "content": content,
+                        }),
                     })
                     .collect();
                 serde_json::Value::Array(blocks)
@@ -427,6 +438,7 @@ fn extract_next_event<S>(state: &mut SseState<S>) -> Option<Result<ChatChunk>> {
                         delta: text.clone(),
                         finish_reason: None,
                         usage: None,
+                        tool_calls: None,
                     }));
                 }
             }
@@ -443,6 +455,7 @@ fn extract_next_event<S>(state: &mut SseState<S>) -> Option<Result<ChatChunk>> {
                     delta: String::new(),
                     finish_reason,
                     usage,
+                    tool_calls: None,
                 }));
             }
             "message_stop" => {
