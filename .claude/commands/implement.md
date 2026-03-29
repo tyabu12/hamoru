@@ -66,12 +66,63 @@ After fetching the issue, check for an existing plan comment:
 
 ## Step 2: Issue + Worktree — Gate G2
 
-1. If from `#N`, skip issue creation. Otherwise ask: "Create a GitHub Issue, or proceed without?"
-2. Display branch name: `<TASK_TYPE>/<SLUG>`.
-3. **Ask: "Create worktree and start?"**
-4. Call `EnterWorktree` with `name: "<TASK_TYPE>/<SLUG>"`.
+### 2a: Issue & Plan Comment
+
+**If `RESUMING=true`** (plan already exists on issue `#N`):
+- Skip issue creation and plan attachment entirely.
+
+**If from `#N`** (existing issue, no plan yet):
+- Post the plan as a comment on issue `#N`:
+  ```bash
+  COMMENT_ID=$(gh api "repos/${OWNER_REPO}/issues/N/comments" \
+    -f body="$(cat <<'HAMORU_PLAN'
+  <!-- hamoru-plan -->
+  ## Implementation Plan
+
+  {PLAN_BODY}
+
+  ## Metadata
+  - **Type**: {TASK_TYPE}
+  - **Branch**: `{TASK_TYPE}/{SLUG}`
+  HAMORU_PLAN
+  )" --jq '.id')
+  ```
+  Set `ISSUE_NUMBER=N`.
+
+**Otherwise** (new task — always create issue):
+- Create a new issue:
+  ```bash
+  ISSUE_URL=$(gh issue create \
+    --title "{EMOJI} {TASK_TYPE}: {TITLE}" \
+    --assignee "@me" \
+    --body "$(cat <<'HAMORU_ISSUE'
+  ## Summary
+  {1-3 sentence summary from plan}
+
+  **Branch**: \`{TASK_TYPE}/{SLUG}\`
+
+  See first comment for implementation checklist.
+  HAMORU_ISSUE
+  )")
+  ```
+  Extract `ISSUE_NUMBER` from the URL.
+- Post the plan as the first comment (same format as the `#N` case above).
+
+### 2b: Worktree Setup
+
+**If `RESUMING=true`**:
+1. Check for existing worktree: `git worktree list | grep {SLUG}`.
+2. If found → `EnterWorktree` with the existing worktree name.
+3. If not found but branch exists remotely (`git ls-remote --heads origin` matches) → fetch the branch and create a new worktree from it.
+4. If nothing exists → create a new worktree (normal flow).
+5. **Ask: "Resume from item {NEXT_ITEM}/{TOTAL}?"**
+
+**Otherwise** (normal flow):
+1. Display: "Issue #{ISSUE_NUMBER} created. Branch: `{TASK_TYPE}/{SLUG}`"
+2. **Ask: "Create worktree and start?"**
+3. Call `EnterWorktree` with `name: "{TASK_TYPE}/{SLUG}"`.
    - On failure (name collision, etc.): suggest alternative name or cleanup. Check `git ls-remote --heads origin <branch>` for remote collisions too; append `-2` suffix if needed (re-validate SLUG).
-5. Verify: `git branch --show-current`.
+4. Verify: `git branch --show-current`.
 
 ## Step 3: Implementation (TDD)
 
