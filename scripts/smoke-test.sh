@@ -318,12 +318,15 @@ YAML
 
   run_test "providers test (ollama)" 0 "$BIN" providers test
 
-  # Extract first pulled model name (jq preferred, grep fallback)
+  # Pick the smallest (lightest) pulled model for fast inference.
+  # jq: sort by disk size (correlates with parameter count). grep: first model as fallback.
   OLLAMA_TAGS=$(curl -sf --max-time 2 http://127.0.0.1:11434/api/tags || true)
   if command -v jq > /dev/null 2>&1; then
-    OLLAMA_MODEL=$(printf '%s\n' "$OLLAMA_TAGS" | jq -r '.models[0].name // empty')
+    OLLAMA_MODEL=$(printf '%s\n' "$OLLAMA_TAGS" \
+      | jq -r '[.models[] | {name, size}] | sort_by(.size) | .[0].name // empty')
   else
-    OLLAMA_MODEL=$(printf '%s\n' "$OLLAMA_TAGS" | grep -o '"name":"[^"]*"' | head -1 | cut -d'"' -f4)
+    OLLAMA_MODEL=$(printf '%s\n' "$OLLAMA_TAGS" \
+      | grep -o '"name":"[^"]*"' | head -1 | cut -d'"' -f4)
   fi
 
   if [[ -n "$OLLAMA_MODEL" ]]; then
