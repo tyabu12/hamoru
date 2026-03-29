@@ -122,8 +122,9 @@ Prefix the subject line with a single emoji that captures the spirit of the chan
 | 004 | Telemetry SQLite Migration — spawn_blocking, MetricsCache design, plan scope | design-plan.md Phase 2 |
 | 005 | Policy Engine Design — sync trait, quality tier heuristic, scoring algorithm | design-plan.md Phase 3 |
 | 006 | Orchestration Engine Design — module structure, condition evaluation, warn-not-error | design-plan.md Phase 4a |
+| 007 | Agent Framework Integration Design — content block types, tool_call buffering, SSE progress | Cross-cutting (Phase 5 + type design) |
 
-Next available number: **007**. Increment sequentially from here.
+Next available number: **008**. Increment sequentially from here.
 
 ## Agent Configuration
 
