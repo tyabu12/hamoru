@@ -1607,6 +1607,7 @@ On error, clearly communicate "what happened" and "what the user should do."
 - IDE Integration: JSON Schema generation for YAML config files (`schemars` crate — note: `ModelEntry`'s `#[serde(untagged)]` has known compatibility issues with schemars)
 - Config validation CLI: `hamoru validate` (YAML schema check + provider reachability verification)
 - Cost comparison benchmark CLI (`hamoru bench`) — productize developer benchmark scripts if user demand warrants (see launch-plan.md Cost Comparison Benchmark)
+- Reasoning Budget Control — declarative control of LLM reasoning/thinking time via Policy Engine and HarnessConstraints. Phase A (reasoning token tracking in `TokenUsage`, `Capability::Reasoning` activation in catalog) in 0.x; Phase B (declarative `ReasoningBudget` on `ChatRequest` + `StepConfig`) in Phase 6/1.0; Phase C (thinking content opt-in, provider-specific param absorption) post-1.0 (ADR-010)
 
 **Related documents**: [Launch & Growth Plan](launch-plan.md)
 
