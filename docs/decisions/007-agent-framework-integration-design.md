@@ -195,7 +195,8 @@ L0+L1 covers the three highest-urgency needs. U4 (step output debugging) is avai
 
 ## Deferred to Future Phases
 
-- **axum crate placement** (Phase 5 start): Whether the HTTP server lives in hamoru-cli, a dedicated `hamoru-server` crate, or elsewhere. Requires a separate ADR per CLAUDE.md.
+- **axum crate placement** (Phase 5 start, ADR-008): Whether the HTTP server lives in hamoru-cli, a dedicated `hamoru-server` crate, or elsewhere. Requires a separate ADR per CLAUDE.md.
+- **ChatResponse content block migration** (Phase 6 reassessment): ChatResponse currently retains flat `content: String` + `tool_calls` fields (see "ChatResponse is NOT changed" above). When Phase 6 introduces thinking blocks, citations, or interleaved text+tool content, ChatResponse may need to evolve to `content: Vec<ContentPart>` or a similar structure. Reassess during Phase 6 trait redesign; if changed, record rationale in a new ADR explaining the departure from this decision.
 - **L2: Step output in extension field** (post-Phase 5): Adds `"step_output"` to L1 events. Opt-in via request header. Requires Hard Rule 8 security review.
 - **L3: Typed SSE events** (post-v1.0): Full semantic event types (`event: hamoru.step.start`). Opt-in mode for hamoru-native UIs/dashboards. Design informed by OpenAI Responses API event types and Anthropic content block lifecycle events. L1 remains the default.
 - **Incremental tool_call streaming** (if demand validated): Upgrade `ChatChunk.tool_calls` from `Option<Vec<ToolCall>>` to `Option<Vec<ToolCallChunk>>` for human-facing UI use cases.

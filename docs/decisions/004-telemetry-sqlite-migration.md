@@ -1,4 +1,4 @@
-# ADR 004: Telemetry SQLite Migration
+# ADR-004: Telemetry SQLite Migration
 
 ## Status
 
