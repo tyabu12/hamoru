@@ -11,10 +11,11 @@ use axum::{
     Json, Router,
     extract::State,
     http::StatusCode,
-    response::{IntoResponse, Response},
+    response::{IntoResponse, Response, Sse, sse::Event},
     routing::{get, post},
 };
 use chrono::Utc;
+use futures::StreamExt;
 use hamoru_core::error::HamoruError;
 use hamoru_core::policy::DefaultPolicyEngine;
 use hamoru_core::provider::ProviderRegistry;
@@ -22,11 +23,12 @@ use hamoru_core::provider::types::ChatRequest;
 use hamoru_core::server::namespace::{ModelTarget, parse_model_target};
 use hamoru_core::server::translate;
 use hamoru_core::server::types::{
-    OaiChatRequest, OaiChatResponse, OaiChoice, OaiErrorBody, OaiErrorResponse,
-    OaiResponseMessage, OaiUsage,
+    OaiChatChunk, OaiChatRequest, OaiChatResponse, OaiChoice, OaiChunkChoice, OaiChunkDelta,
+    OaiErrorBody, OaiErrorResponse, OaiResponseMessage, OaiUsage,
 };
 use hamoru_core::telemetry::{HistoryEntry, TelemetryStore};
 use serde_json::json;
+use tokio_stream::wrappers::ReceiverStream;
 
 /// Shared application state for all handlers.
 pub struct AppState {
@@ -91,19 +93,11 @@ async fn list_models(State(state): State<Arc<AppState>>) -> Result<Json<serde_js
 // POST /v1/chat/completions
 // ---------------------------------------------------------------------------
 
-/// Handles chat completion requests (non-streaming only in this commit).
-#[axum::debug_handler]
+/// Handles chat completion requests (non-streaming and streaming).
 async fn chat_completions(
     State(state): State<Arc<AppState>>,
     Json(req): Json<OaiChatRequest>,
-) -> Result<Json<OaiChatResponse>, ApiError> {
-    // TODO: streaming support in commit 6
-    if req.stream {
-        return Err(ApiError(HamoruError::ConfigError {
-            reason: "Streaming not yet implemented. Set stream: false.".to_string(),
-        }));
-    }
-
+) -> Result<Response, ApiError> {
     let target = parse_model_target(&req.model)?;
 
     // Translate messages
@@ -126,73 +120,207 @@ async fn chat_completions(
     // Resolve provider and model based on target
     let (provider_id, model_id) = resolve_target(&target, &state)?;
 
-    // Build internal request
-    let chat_request = ChatRequest {
-        model: model_id.clone(),
-        messages,
-        temperature: req.temperature,
-        max_tokens: req.max_tokens,
-        tools,
-        tool_choice,
-        stream: false,
-    };
-
-    // Execute the request
-    let start = Instant::now();
     let provider = state.providers.get(&provider_id).ok_or_else(|| {
         HamoruError::ProviderUnavailable {
             provider: provider_id.clone(),
             reason: "Provider not found in registry".to_string(),
         }
     })?;
-    let response = provider.chat(chat_request).await?;
-    let latency_ms = start.elapsed().as_millis() as u64;
 
-    // Record telemetry (best-effort — don't fail the request on telemetry errors)
-    let model_info = provider.model_info(&model_id).await.ok();
-    let cost = model_info
-        .as_ref()
-        .map(|mi| response.usage.calculate_cost(mi))
-        .unwrap_or(0.0);
+    if req.stream {
+        // Streaming path
+        let chat_request = ChatRequest {
+            model: model_id.clone(),
+            messages,
+            temperature: req.temperature,
+            max_tokens: req.max_tokens,
+            tools,
+            tool_choice,
+            stream: true,
+        };
 
-    let entry = HistoryEntry {
-        timestamp: Utc::now(),
-        provider: provider_id.clone(),
-        model: model_id.clone(),
-        tokens: response.usage.clone(),
-        cost,
-        latency_ms,
-        success: true,
-        tags: vec![],
-    };
-    if let Err(e) = state.telemetry.record(&entry).await {
-        tracing::warn!("Failed to record telemetry: {e}");
-    }
+        let response_id = format!("chatcmpl-{}", uuid::Uuid::new_v4());
+        let created = Utc::now().timestamp();
+        let model_label = format!("{provider_id}:{model_id}");
+        let stream = provider.chat_stream(chat_request).await?;
 
-    // Build OpenAI response
-    let (content, oai_tool_calls) = translate::chat_response_to_oai_parts(&response);
-    let response_id = format!("chatcmpl-{}", uuid::Uuid::new_v4());
+        // Channel-based SSE: spawn a task that consumes the provider stream
+        // and sends formatted SSE events through a channel.
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(32);
+        let provider_id_clone = provider_id.clone();
+        let model_id_clone = model_id.clone();
 
-    Ok(Json(OaiChatResponse {
-        id: response_id,
-        object: "chat.completion".to_string(),
-        created: Utc::now().timestamp(),
-        model: format!("{provider_id}:{model_id}"),
-        choices: vec![OaiChoice {
-            index: 0,
-            message: OaiResponseMessage {
-                role: "assistant".to_string(),
-                content,
-                tool_calls: oai_tool_calls,
+        // Send initial chunk with role
+        let first_chunk = OaiChatChunk {
+            id: response_id.clone(),
+            object: "chat.completion.chunk".to_string(),
+            created,
+            model: model_label.clone(),
+            choices: vec![OaiChunkChoice {
+                index: 0,
+                delta: OaiChunkDelta {
+                    role: Some("assistant".to_string()),
+                    content: None,
+                    tool_calls: None,
+                },
+                finish_reason: None,
+            }],
+            usage: None,
+            hamoru: None,
+        };
+        let first_data = serde_json::to_string(&first_chunk).unwrap_or_default();
+        let _ = tx.send(Ok(Event::default().data(first_data))).await;
+
+        // Spawn stream consumer task
+        // Safety: telemetry is behind Arc (AppState is Arc'd), so we clone the Arc
+        let state_clone = Arc::clone(&state);
+        tokio::spawn(async move {
+            let start = Instant::now();
+            let mut stream = std::pin::pin!(stream);
+            let mut final_usage = None;
+
+            while let Some(chunk_result) = stream.next().await {
+                match chunk_result {
+                    Ok(chunk) => {
+                        // Capture final usage for telemetry
+                        if chunk.usage.is_some() {
+                            final_usage = chunk.usage.clone();
+                        }
+
+                        // Build SSE chunk
+                        let oai_chunk = OaiChatChunk {
+                            id: response_id.clone(),
+                            object: "chat.completion.chunk".to_string(),
+                            created,
+                            model: model_label.clone(),
+                            choices: vec![OaiChunkChoice {
+                                index: 0,
+                                delta: OaiChunkDelta {
+                                    role: None,
+                                    content: if chunk.delta.is_empty() {
+                                        None
+                                    } else {
+                                        Some(chunk.delta)
+                                    },
+                                    tool_calls: chunk.tool_calls.as_ref().map(|tcs| {
+                                        translate::tool_calls_to_oai(tcs)
+                                    }),
+                                },
+                                finish_reason: chunk.finish_reason.as_ref().map(|fr| {
+                                    translate::finish_reason_to_oai(fr).to_string()
+                                }),
+                            }],
+                            usage: chunk.usage.as_ref().map(|u| OaiUsage {
+                                prompt_tokens: u.input_tokens,
+                                completion_tokens: u.output_tokens,
+                                total_tokens: u.input_tokens + u.output_tokens,
+                            }),
+                            hamoru: None,
+                        };
+
+                        let data = serde_json::to_string(&oai_chunk).unwrap_or_default();
+                        if tx.send(Ok(Event::default().data(data))).await.is_err() {
+                            break; // Client disconnected
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Stream error: {e}");
+                        break;
+                    }
+                }
+            }
+
+            // Send [DONE] sentinel
+            let _ = tx.send(Ok(Event::default().data("[DONE]"))).await;
+
+            // Record telemetry
+            let latency_ms = start.elapsed().as_millis() as u64;
+            if let Some(ref usage) = final_usage {
+                let entry = HistoryEntry {
+                    timestamp: Utc::now(),
+                    provider: provider_id_clone,
+                    model: model_id_clone,
+                    tokens: usage.clone(),
+                    cost: 0.0, // Cost calculation requires model_info lookup
+                    latency_ms,
+                    success: true,
+                    tags: vec![],
+                };
+                if let Err(e) = state_clone.telemetry.record(&entry).await {
+                    tracing::warn!("Failed to record telemetry: {e}");
+                }
+            }
+        });
+
+        let sse_stream = ReceiverStream::new(rx);
+        let sse = Sse::new(sse_stream)
+            .keep_alive(axum::response::sse::KeepAlive::default());
+
+        Ok(sse.into_response())
+    } else {
+        // Non-streaming path
+        let chat_request = ChatRequest {
+            model: model_id.clone(),
+            messages,
+            temperature: req.temperature,
+            max_tokens: req.max_tokens,
+            tools,
+            tool_choice,
+            stream: false,
+        };
+
+        let start = Instant::now();
+        let response = provider.chat(chat_request).await?;
+        let latency_ms = start.elapsed().as_millis() as u64;
+
+        // Record telemetry (best-effort)
+        let model_info = provider.model_info(&model_id).await.ok();
+        let cost = model_info
+            .as_ref()
+            .map(|mi| response.usage.calculate_cost(mi))
+            .unwrap_or(0.0);
+
+        let entry = HistoryEntry {
+            timestamp: Utc::now(),
+            provider: provider_id.clone(),
+            model: model_id.clone(),
+            tokens: response.usage.clone(),
+            cost,
+            latency_ms,
+            success: true,
+            tags: vec![],
+        };
+        if let Err(e) = state.telemetry.record(&entry).await {
+            tracing::warn!("Failed to record telemetry: {e}");
+        }
+
+        // Build OpenAI response
+        let (content, oai_tool_calls) = translate::chat_response_to_oai_parts(&response);
+        let response_id = format!("chatcmpl-{}", uuid::Uuid::new_v4());
+
+        Ok(Json(OaiChatResponse {
+            id: response_id,
+            object: "chat.completion".to_string(),
+            created: Utc::now().timestamp(),
+            model: format!("{provider_id}:{model_id}"),
+            choices: vec![OaiChoice {
+                index: 0,
+                message: OaiResponseMessage {
+                    role: "assistant".to_string(),
+                    content,
+                    tool_calls: oai_tool_calls,
+                },
+                finish_reason: translate::finish_reason_to_oai(&response.finish_reason)
+                    .to_string(),
+            }],
+            usage: OaiUsage {
+                prompt_tokens: response.usage.input_tokens,
+                completion_tokens: response.usage.output_tokens,
+                total_tokens: response.usage.input_tokens + response.usage.output_tokens,
             },
-            finish_reason: translate::finish_reason_to_oai(&response.finish_reason).to_string(),
-        }],
-        usage: OaiUsage {
-            prompt_tokens: response.usage.input_tokens,
-            completion_tokens: response.usage.output_tokens,
-            total_tokens: response.usage.input_tokens + response.usage.output_tokens,
-        },
-    }))
+        })
+        .into_response())
+    }
 }
 
 /// Resolve a `ModelTarget` into (provider_id, model_id).
@@ -595,8 +723,49 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chat_completions_streaming_not_yet_supported() {
-        let state = test_state(vec![sample_model()]);
+    async fn chat_completions_streaming_returns_sse() {
+        let chunks = vec![
+            hamoru_core::provider::types::ChatChunk {
+                delta: "Hello".to_string(),
+                finish_reason: None,
+                usage: None,
+                tool_calls: None,
+            },
+            hamoru_core::provider::types::ChatChunk {
+                delta: " world".to_string(),
+                finish_reason: Some(hamoru_core::provider::types::FinishReason::Stop),
+                usage: Some(hamoru_core::provider::types::TokenUsage {
+                    input_tokens: 5,
+                    output_tokens: 2,
+                    cache_creation_input_tokens: None,
+                    cache_read_input_tokens: None,
+                }),
+                tool_calls: None,
+            },
+        ];
+
+        let mut provider = MockProvider::new("test-provider");
+        provider.set_models(vec![sample_model()]);
+        provider.queue_stream_chunks(Ok(chunks));
+        let mut registry = ProviderRegistry::new();
+        registry.register(Box::new(provider));
+
+        let policy_config = PolicyConfig {
+            policies: vec![PolicyDefinition {
+                name: "cost-optimized".to_string(),
+                description: None,
+                constraints: Default::default(),
+                preferences: PolicyPreferences {
+                    priority: Priority::Cost,
+                },
+            }],
+            ..Default::default()
+        };
+        let state = Arc::new(AppState {
+            providers: registry,
+            policy_engine: DefaultPolicyEngine::new(policy_config),
+            telemetry: Box::new(InMemoryTelemetryStore::new()),
+        });
         let app = build_router(state);
 
         let body = serde_json::json!({
@@ -612,6 +781,44 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
 
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(resp.status(), StatusCode::OK);
+        let content_type = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            content_type.contains("text/event-stream"),
+            "Expected SSE content type, got: {content_type}"
+        );
+
+        // Read SSE body
+        let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body_str = String::from_utf8_lossy(&body_bytes);
+
+        // Verify SSE events contain data lines
+        assert!(body_str.contains("data:"), "SSE body should contain data lines");
+        assert!(body_str.contains("[DONE]"), "SSE body should end with [DONE]");
+
+        // Parse the content chunks
+        let data_lines: Vec<&str> = body_str
+            .lines()
+            .filter(|l| l.starts_with("data:"))
+            .map(|l| l.strip_prefix("data:").unwrap().trim())
+            .filter(|l| *l != "[DONE]")
+            .collect();
+
+        // Should have initial role chunk + 2 content chunks
+        assert!(
+            data_lines.len() >= 2,
+            "Expected at least 2 data lines, got: {}",
+            data_lines.len()
+        );
+
+        // First data line should have role
+        let first: serde_json::Value = serde_json::from_str(data_lines[0]).unwrap();
+        assert_eq!(first["choices"][0]["delta"]["role"], "assistant");
     }
 }
