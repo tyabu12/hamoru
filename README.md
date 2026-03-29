@@ -36,12 +36,12 @@ See [design-plan.md](docs/design-plan.md) for the full roadmap.
 
 | Provider | Type | Models (built-in catalog) | Status |
 |----------|------|---------------------------|--------|
-| [Anthropic](https://platform.claude.com/docs/en/home) | Cloud API | `claude-sonnet-4-6`, `claude-haiku-4-5` | ✅ Implemented |
-| [DeepSeek](https://api-docs.deepseek.com/) | OpenAI-compatible | — | 🔲 Planned |
-| [Google Gemini](https://ai.google.dev/gemini-api/docs) | Cloud API | — | 🔲 Planned |
-| [Groq](https://console.groq.com/docs/overview) | OpenAI-compatible | — | 🔲 Planned |
-| [Ollama](https://ollama.com) | Local | `llama3.3:70b`, `qwen2.5-coder:14b` | ✅ Implemented |
-| [OpenAI](https://platform.openai.com/docs) | Cloud API | — | 🔲 Planned |
+| [Anthropic](https://platform.claude.com/docs/en/home) | Cloud API | `claude-sonnet-4-6`, `claude-haiku-4-5` | ✅ |
+| [DeepSeek](https://api-docs.deepseek.com/) | OpenAI-compatible | — | 🔲 Planned (post-v1.0) |
+| [Google Gemini](https://ai.google.dev/gemini-api/docs) | Cloud API | — | 🔲 Planned (post-v1.0) |
+| [Groq](https://console.groq.com/docs/overview) | OpenAI-compatible | — | 🔲 Planned (post-v1.0) |
+| [Ollama](https://ollama.com) | Local | `llama3.3:70b`, `qwen2.5-coder:14b` | ✅ |
+| [OpenAI](https://platform.openai.com/docs) | Cloud API | — | 🔲 Planned (post-v1.0) |
 
 > Models listed above are from the built-in catalog with default pricing. You can configure any model your provider supports via `hamoru.yaml` — including custom cost overrides.
 >
@@ -140,25 +140,37 @@ cargo run -p hamoru-cli -- run --tags review "Review this code for security issu
 cargo run -p hamoru-cli -- run -w workflow.yaml "Implement an auth API"
 ```
 
+## 🔑 Environment Variables
+
+| Variable | Provider | Status |
+|----------|----------|--------|
+| `HAMORU_ANTHROPIC_API_KEY` | Anthropic | ✅ |
+| `HAMORU_DEEPSEEK_API_KEY` | DeepSeek | 🔲 Planned (post-v1.0) |
+| `HAMORU_GEMINI_API_KEY` | Google Gemini | 🔲 Planned (post-v1.0) |
+| `HAMORU_GROQ_API_KEY` | Groq | 🔲 Planned (post-v1.0) |
+| `HAMORU_OPENAI_API_KEY` | OpenAI | 🔲 Planned (post-v1.0) |
+
+> Ollama runs locally and does not require an API key.
+
 ## 📖 Commands
 
 ### Top-level commands
 
 | Command | Description | Status |
 |---------|-------------|--------|
-| `hamoru init` | Initialize project (creates `.hamoru/` with config templates) | ✅ Implemented |
-| `hamoru run <prompt>` | Execute a prompt, workflow, or collaboration | ✅ Implemented |
-| `hamoru plan` | Telemetry-based cost impact prediction | ✅ Implemented |
-| `hamoru metrics --period 7d` | View cost and performance metrics | ✅ Implemented |
-| `hamoru providers list` | List configured providers and their models | ✅ Implemented |
-| `hamoru providers test` | Test connectivity to all configured providers | ✅ Implemented |
-| `hamoru telemetry show` | Show telemetry store details | ✅ Implemented |
-| `hamoru telemetry pull` | Sync telemetry from remote storage | 🔲 Stub (requires remote config) |
-| `hamoru telemetry push` | Sync telemetry to remote storage | 🔲 Stub (requires remote config) |
-| `hamoru status` | Show current configuration overview | 🔲 Stub |
-| `hamoru serve` | Start OpenAI-compatible API server | 🔲 Stub (Phase 5) |
-| `hamoru agents list` | List agent definitions | 🔲 Stub (Phase 6) |
-| `hamoru agents test <name>` | Dry-run a collaboration pattern | 🔲 Stub (Phase 6) |
+| `hamoru init` | Initialize project (creates `.hamoru/` with config templates) | ✅ |
+| `hamoru run <prompt>` | Execute a prompt, workflow, or collaboration | ✅ |
+| `hamoru plan` | Telemetry-based cost impact prediction | ✅ |
+| `hamoru metrics --period 7d` | View cost and performance metrics | ✅ |
+| `hamoru providers list` | List configured providers and their models | ✅ |
+| `hamoru providers test` | Test connectivity to all configured providers | ✅ |
+| `hamoru telemetry show` | Show telemetry store details | ✅ |
+| `hamoru telemetry pull` | Sync telemetry from remote storage | 🔲 Planned (remote config) |
+| `hamoru telemetry push` | Sync telemetry to remote storage | 🔲 Planned (remote config) |
+| `hamoru status` | Show current configuration overview | 🔲 Planned |
+| `hamoru serve` | Start OpenAI-compatible API server | 🔲 Planned (Phase 5) |
+| `hamoru agents list` | List agent definitions | 🔲 Planned (Phase 6) |
+| `hamoru agents test <name>` | Dry-run a collaboration pattern | 🔲 Planned (Phase 6) |
 
 ### `hamoru run` options
 
@@ -168,7 +180,7 @@ cargo run -p hamoru-cli -- run -w workflow.yaml "Implement an auth API"
 | `-p policy-name` | Policy-based model selection (e.g., `cost-optimized`) | ✅ |
 | `--tags tag1,tag2` | Tag-based routing (can combine with `-p`) | ✅ |
 | `-w workflow.yaml` | Execute a multi-step workflow from YAML | ✅ |
-| `-a collaboration` | Execute an agent collaboration pattern | 🔲 Phase 6 |
+| `-a collaboration` | Execute an agent collaboration pattern | 🔲 Planned (Phase 6) |
 | `--no-stream` | Disable streaming (print full response at once) | ✅ |
 
 ## 🛠️ Development
