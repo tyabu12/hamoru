@@ -30,8 +30,11 @@ pub fn build_step_messages(
         content: MessageContent::Text(processed),
     }];
 
-    // Inject previous_output as a separate User message (Hard Rule 4)
-    if let Some(prev) = previous_output {
+    // Inject previous_output as a separate User message (Hard Rule 4).
+    // Filter out empty strings: tool-calling steps may produce no text content
+    // (only tool_use blocks), resulting in an empty previous_output that would
+    // create an empty User message rejected by the Anthropic API.
+    if let Some(prev) = previous_output.filter(|p| !p.is_empty()) {
         // Injection detection (design-plan.md §5.3)
         if prev.starts_with("System:") || prev.contains("You are a") || prev.contains("</") {
             tracing::warn!(
@@ -178,6 +181,25 @@ mod tests {
             msgs.iter().any(|m| m.role == Role::User),
             "must produce at least one User message for API compatibility"
         );
+    }
+
+    #[test]
+    fn empty_previous_output_falls_back_to_task() {
+        // Tool-calling steps may produce no text content (only tool_use blocks),
+        // resulting in an empty previous_output. This must not create an empty
+        // User message (Anthropic rejects it with HTTP 400).
+        let msgs = build_step_messages(
+            "Review: {previous_output}",
+            "original task",
+            Some(""),
+        );
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].role, Role::System);
+        assert_eq!(msgs[1].role, Role::User);
+        match &msgs[1].content {
+            MessageContent::Text(t) => assert_eq!(t, "original task"),
+            _ => panic!("expected text"),
+        }
     }
 
     #[test]
