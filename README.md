@@ -92,7 +92,8 @@ cargo run -p hamoru-cli -- init
 
 ### Option A: Local LLM (no API key required)
 
-Install [Ollama](https://ollama.com), then add it to your config (`.hamoru/hamoru.yaml`):
+Install [Ollama](https://ollama.com), then add it to your config (`.hamoru/hamoru.yaml`).
+We use `llama3.2` (3B, ~2 GB) here for a quick first run — you can swap in any model Ollama supports:
 
 ```yaml
 providers:
