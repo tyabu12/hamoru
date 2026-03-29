@@ -173,7 +173,8 @@ pub struct StepOutput {
     pub full_content: String,
     /// Extracted status value (e.g., "approved", "improve", "done").
     pub status: String,
-    /// Body content excluding the STATUS line.
+    /// Body content excluding the STATUS line. In tool-calling mode with empty
+    /// response text, this falls back to the tool call's `reason` field.
     pub content: String,
     /// Reason from tool calling mode (None in status line mode).
     pub reason: Option<String>,
