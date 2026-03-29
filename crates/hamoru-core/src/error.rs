@@ -164,7 +164,7 @@ pub enum HamoruError {
 
     /// A provider failed in the middle of a multi-step workflow.
     // SECURITY: sanitize source error to strip credentials before wrapping.
-    #[error("Provider failed mid-workflow at step '{step}'")]
+    #[error("Provider failed mid-workflow at step '{step}': {source}")]
     MidWorkflowFailure {
         /// Step where the failure occurred.
         step: String,
