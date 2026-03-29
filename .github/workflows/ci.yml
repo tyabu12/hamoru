@@ -211,6 +211,90 @@ jobs:
 
           echo "job_outcome=$SMOKE_OUTCOME" >> "$GITHUB_OUTPUT"
 
+  # SECURITY: This job runs repository code WITH cloud API secrets to test real
+  # provider connectivity. Access is guarded by two layers:
+  # 1. GitHub built-in: pull_request event blocks secrets from fork PRs
+  # 2. Explicit guard: head.repo.full_name == github.repository ensures only
+  #    same-repo branches (writers) receive secrets
+  # Defense in depth: smoke-test.sh auto-SKIPs when API keys are unset.
+  # Matrix values are hardcoded — do NOT parameterize secret_name from
+  # external inputs (workflow_dispatch, repository variables, etc.).
+  cloud-smoke:
+    name: Cloud Smoke (${{ matrix.provider }})
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Advisory: cloud API tests can be flaky due to rate limits or outages.
+    # Promote to required after 2-4 weeks of stable green runs.
+    continue-on-error: true
+    if: >-
+      !cancelled()
+      && needs.check.result == 'success'
+      && (github.event_name == 'push'
+      || github.event.pull_request.head.repo.full_name == github.repository)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - provider: anthropic
+            env_name: HAMORU_ANTHROPIC_API_KEY
+            secret_name: HAMORU_ANTHROPIC_API_KEY
+          # Future providers — add entry + secret:
+          # - provider: openai
+          #   env_name: HAMORU_OPENAI_API_KEY
+          #   secret_name: HAMORU_OPENAI_API_KEY
+    # NOTE: With a matrix, outputs capture only one leg's values. This works
+    # for the current single-provider matrix. When adding a 2nd provider,
+    # rework output aggregation (e.g., artifacts or an intermediate step).
+    outputs:
+      smoke-passed: ${{ steps.report.outputs.passed }}
+      smoke-failed: ${{ steps.report.outputs.failed }}
+      smoke-skipped: ${{ steps.report.outputs.skipped }}
+      smoke-parse-error: ${{ steps.report.outputs.parse_error }}
+      job-outcome: ${{ steps.report.outputs.job_outcome }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Build
+        run: cargo build --bin hamoru-cli
+
+      # SECURITY: Secret is injected via env: directive (not shell expansion).
+      # The env_name/secret_name values come from the hardcoded matrix above.
+      - name: Smoke test (cloud - ${{ matrix.provider }})
+        id: smoke
+        env:
+          HAMORU_BIN: target/debug/hamoru-cli
+          ${{ matrix.env_name }}: ${{ secrets[matrix.secret_name] }}
+        run: |
+          bash scripts/smoke-test.sh --verbose 2>&1 | tee /tmp/cloud-smoke.log
+
+      # Separate step ensures outputs are captured even when smoke test fails.
+      # Uses steps.smoke.outcome (not .result) to see the real exit status
+      # despite continue-on-error at the job level.
+      - name: Parse smoke test results
+        id: report
+        if: ${{ !cancelled() }}
+        env:
+          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
+        run: |
+          SUMMARY=$(grep -E '^# [0-9]+ passed,' /tmp/cloud-smoke.log | tail -1)
+          if [ -z "$SUMMARY" ]; then
+            echo "parse_error=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "parse_error=false" >> "$GITHUB_OUTPUT"
+            echo "passed=$(echo "$SUMMARY" | grep -oE '^# [0-9]+' | grep -oE '[0-9]+')" >> "$GITHUB_OUTPUT"
+            echo "failed=$(echo "$SUMMARY" | grep -oE '[0-9]+ failed' | grep -oE '[0-9]+')" >> "$GITHUB_OUTPUT"
+            echo "skipped=$(echo "$SUMMARY" | grep -oE '[0-9]+ skipped' | grep -oE '[0-9]+')" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "job_outcome=$SMOKE_OUTCOME" >> "$GITHUB_OUTPUT"
+
   security:
     name: Security
     runs-on: ubuntu-latest
@@ -284,7 +368,7 @@ jobs:
   # Do NOT change the trigger to pull_request_target.
   pr-comment:
     name: PR Comment
-    needs: [check, ollama-smoke, pr-coverage]
+    needs: [check, ollama-smoke, cloud-smoke, pr-coverage]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: >-
@@ -344,6 +428,11 @@ jobs:
           OLLAMA_PARSE_ERROR: ${{ needs.ollama-smoke.outputs.smoke-parse-error }}
           OLLAMA_MODEL: ${{ needs.ollama-smoke.outputs.smoke-model }}
           OLLAMA_OUTCOME: ${{ needs.ollama-smoke.outputs.job-outcome }}
+          CLOUD_PASSED: ${{ needs.cloud-smoke.outputs.smoke-passed }}
+          CLOUD_FAILED: ${{ needs.cloud-smoke.outputs.smoke-failed }}
+          CLOUD_SKIPPED: ${{ needs.cloud-smoke.outputs.smoke-skipped }}
+          CLOUD_PARSE_ERROR: ${{ needs.cloud-smoke.outputs.smoke-parse-error }}
+          CLOUD_OUTCOME: ${{ needs.cloud-smoke.outputs.job-outcome }}
           PR_COV: ${{ steps.cov.outputs.pct }}
           BASELINE_PCT: ${{ steps.baseline.outputs.pct }}
           CI_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -439,6 +528,43 @@ jobs:
               echo "**${LINE}**"
             fi
 
+            # Cloud smoke test results (advisory — skipped for fork PRs)
+            echo ""
+            if [ -z "$CLOUD_PARSE_ERROR" ] && [ "$CLOUD_OUTCOME" = "failure" ]; then
+              echo "### Cloud Smoke Test"
+              echo ""
+              echo "> [!WARNING]"
+              echo "> Cloud smoke test failed (no parseable output)."
+            elif [ -z "$CLOUD_PARSE_ERROR" ]; then
+              echo "### Cloud Smoke Test"
+              echo ""
+              echo "> Cloud smoke test did not run."
+            elif [ "$CLOUD_PARSE_ERROR" = "true" ]; then
+              echo "### Cloud Smoke Test"
+              echo ""
+              echo "> Could not parse cloud smoke test output."
+            else
+              C_PASSED=$(echo "${CLOUD_PASSED:-0}" | grep -oE '^[0-9]+$' || echo "0")
+              C_FAILED=$(echo "${CLOUD_FAILED:-0}" | grep -oE '^[0-9]+$' || echo "0")
+              C_SKIPPED=$(echo "${CLOUD_SKIPPED:-0}" | grep -oE '^[0-9]+$' || echo "0")
+
+              echo "### Cloud Smoke Test"
+              echo ""
+              LINE="${C_PASSED} passed"
+              if [ "$C_FAILED" != "0" ]; then
+                LINE="${LINE}, ${C_FAILED} FAILED"
+              fi
+              if [ "$C_SKIPPED" != "0" ]; then
+                LINE="${LINE}, ${C_SKIPPED} skipped"
+              fi
+              if [ "$C_FAILED" != "0" ]; then
+                echo "> [!WARNING]"
+                echo "> **${LINE}**"
+              else
+                echo "**${LINE}**"
+              fi
+            fi
+
             # Coverage with delta
             echo ""
             echo "### Coverage"
@@ -526,7 +652,7 @@ jobs:
 
   discord-notify:
     name: Discord Notify
-    needs: [check, ollama-smoke, security]
+    needs: [check, ollama-smoke, cloud-smoke, security]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     # SECURITY: Runs on main pushes and PRs. Fork PRs cannot access
@@ -558,6 +684,11 @@ jobs:
           OLLAMA_PARSE_ERROR: ${{ needs.ollama-smoke.outputs.smoke-parse-error }}
           OLLAMA_MODEL: ${{ needs.ollama-smoke.outputs.smoke-model }}
           OLLAMA_JOB_OUTCOME: ${{ needs.ollama-smoke.outputs.job-outcome }}
+          CLOUD_PASSED: ${{ needs.cloud-smoke.outputs.smoke-passed }}
+          CLOUD_FAILED: ${{ needs.cloud-smoke.outputs.smoke-failed }}
+          CLOUD_SKIPPED: ${{ needs.cloud-smoke.outputs.smoke-skipped }}
+          CLOUD_PARSE_ERROR: ${{ needs.cloud-smoke.outputs.smoke-parse-error }}
+          CLOUD_JOB_OUTCOME: ${{ needs.cloud-smoke.outputs.job-outcome }}
           SECURITY_RESULT: ${{ needs.security.result }}
           EVENT_NAME: ${{ github.event_name }}
           COMMIT_SHA: ${{ github.sha }}
@@ -646,6 +777,31 @@ jobs:
               add_line ":white_check_mark: **Ollama**: ${O_LINE}"
             else
               add_line ":warning: **Ollama**: ${O_LINE}"
+              HAS_WARNING=true
+            fi
+          fi
+
+          # --- Cloud smoke test (advisory — warning, not failure) ---
+          if [ -z "$CLOUD_PARSE_ERROR" ] && [ "$CLOUD_JOB_OUTCOME" = "failure" ]; then
+            add_line ":warning: **Cloud**: job failed (no output)"
+            HAS_WARNING=true
+          elif [ -z "$CLOUD_PARSE_ERROR" ]; then
+            add_line ":warning: **Cloud**: did not run"
+            HAS_WARNING=true
+          elif [ "$CLOUD_PARSE_ERROR" = "true" ]; then
+            add_line ":warning: **Cloud**: parse error"
+            HAS_WARNING=true
+          else
+            C_PASSED=$(echo "${CLOUD_PASSED:-0}" | grep -oE '^[0-9]+$' || echo "0")
+            C_FAILED=$(echo "${CLOUD_FAILED:-0}" | grep -oE '^[0-9]+$' || echo "0")
+            C_SKIPPED=$(echo "${CLOUD_SKIPPED:-0}" | grep -oE '^[0-9]+$' || echo "0")
+            C_LINE="${C_PASSED} passed"
+            [ "$C_FAILED" != "0" ] && C_LINE="${C_LINE}, **${C_FAILED} failed**"
+            [ "$C_SKIPPED" != "0" ] && C_LINE="${C_LINE}, ${C_SKIPPED} skipped"
+            if [ "$C_FAILED" = "0" ]; then
+              add_line ":white_check_mark: **Cloud**: ${C_LINE}"
+            else
+              add_line ":warning: **Cloud**: ${C_LINE}"
               HAS_WARNING=true
             fi
           fi

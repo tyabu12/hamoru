@@ -311,12 +311,14 @@ async fn providers_list() -> Result<(), HamoruError> {
 
 async fn providers_test() -> Result<(), HamoruError> {
     let (config, registry) = load_and_build()?;
+    let mut failed_count: usize = 0;
 
     for pc in &config.providers {
         let provider = match registry.get(&pc.name) {
             Some(p) => p,
             None => {
                 println!("  \u{2717} {}: not found in registry", pc.name);
+                failed_count += 1;
                 continue;
             }
         };
@@ -325,34 +327,54 @@ async fn providers_test() -> Result<(), HamoruError> {
         let result = match pc.provider_type {
             ProviderType::Ollama => provider.list_models().await.map(|_| ()),
             ProviderType::Anthropic => {
-                // Lightweight check: send minimal request
-                let models = provider.list_models().await?;
-                let model = models.first().map(|m| m.id.clone()).unwrap_or_default();
-                provider
-                    .chat(ChatRequest {
-                        model,
-                        messages: vec![Message {
-                            role: Role::User,
-                            content: MessageContent::Text("Hi".to_string()),
-                        }],
-                        temperature: None,
-                        max_tokens: Some(1),
-                        tools: None,
-                        tool_choice: None,
-                        stream: false,
-                    })
-                    .await
-                    .map(|_| ())
+                // Lightweight check: send minimal request.
+                // Capture list_models errors (don't short-circuit with ?)
+                // so all providers are tested before returning a summary.
+                match provider.list_models().await {
+                    Err(e) => Err(e),
+                    Ok(models) => {
+                        let model = models.first().map(|m| m.id.clone()).unwrap_or_default();
+                        provider
+                            .chat(ChatRequest {
+                                model,
+                                messages: vec![Message {
+                                    role: Role::User,
+                                    content: MessageContent::Text("Hi".to_string()),
+                                }],
+                                temperature: None,
+                                max_tokens: Some(1),
+                                tools: None,
+                                tool_choice: None,
+                                stream: false,
+                            })
+                            .await
+                            .map(|_| ())
+                    }
+                }
             }
         };
         let elapsed = start.elapsed().as_millis();
 
         match result {
             Ok(()) => println!("  \u{2713} {}: healthy ({elapsed}ms)", pc.name),
-            Err(e) => println!("  \u{2717} {}: {}", pc.name, format_cli_error(&e)),
+            Err(e) => {
+                println!("  \u{2717} {}: {}", pc.name, format_cli_error(&e));
+                failed_count += 1;
+            }
         }
     }
-    Ok(())
+
+    if failed_count > 0 {
+        Err(HamoruError::ProviderUnavailable {
+            provider: "providers test".to_string(),
+            reason: format!(
+                "{failed_count} of {} provider(s) failed. See details above.",
+                config.providers.len()
+            ),
+        })
+    } else {
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
