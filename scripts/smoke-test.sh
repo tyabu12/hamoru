@@ -375,6 +375,11 @@ else
   skip_test "run -m local:<model> (ollama)" "Ollama server not running"
 fi
 
+# TODO: Multi-step workflow test (generate-review loop) is Anthropic-only (GROUP 2).
+# Ollama does not support tool_choice, so the report_status tool cannot be forced.
+# STATUS line fallback exists but is unreliable with small models.
+# Revisit when Ollama adds tool_choice support.
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
