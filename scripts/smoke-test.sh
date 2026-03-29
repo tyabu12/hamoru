@@ -40,6 +40,15 @@ done
 # Prevent verbose tracing from leaking secrets via reqwest / tracing output.
 export RUST_LOG="${RUST_LOG:-warn}"
 
+# Portable timeout (GNU coreutils: timeout, macOS Homebrew: gtimeout)
+if command -v timeout > /dev/null 2>&1; then
+  TIMEOUT_CMD=timeout
+elif command -v gtimeout > /dev/null 2>&1; then
+  TIMEOUT_CMD=gtimeout
+else
+  TIMEOUT_CMD=""
+fi
+
 # ---------------------------------------------------------------------------
 # Resolve binary
 # ---------------------------------------------------------------------------
@@ -173,6 +182,18 @@ skip_test() {
   echo "[SKIP] $desc ($reason)"
 }
 
+# Config backup/restore helpers — used by Ollama tests that swap hamoru.yaml.
+backup_config() {
+  cp -r "$WORK_DIR/.hamoru" "$WORK_DIR/.hamoru.bak"
+}
+
+restore_config() {
+  if [[ -d "$WORK_DIR/.hamoru.bak" ]]; then
+    rm -rf "$WORK_DIR/.hamoru"
+    cp -r "$WORK_DIR/.hamoru.bak" "$WORK_DIR/.hamoru"
+  fi
+}
+
 # ---------------------------------------------------------------------------
 # GROUP 1: Offline tests (no API key required)
 # ---------------------------------------------------------------------------
@@ -187,6 +208,7 @@ run_test "init creates .hamoru/ directory" 0 "$BIN" init
 assert_exists ".hamoru/hamoru.yaml" ".hamoru/hamoru.yaml exists after init"
 assert_exists ".hamoru/hamoru.policy.yaml" ".hamoru/hamoru.policy.yaml exists after init"
 run_test "init is idempotent" 0 "$BIN" init
+backup_config
 
 # providers list requires build_registry() which eagerly resolves API keys.
 # Use a fake key since list_models() only reads the hardcoded catalog (no HTTP).
@@ -213,6 +235,18 @@ run_test "run -w nonexistent file" nonzero \
   env HAMORU_ANTHROPIC_API_KEY=fake-key "$BIN" run -w nonexistent.yaml "test"
 assert_contains "$STDERR_FILE" "Failed to read workflow file" \
   "workflow file-not-found produces actionable error"
+
+# Phase 4a: Ollama-only config (no API key, no server needed — catalog fallback)
+cat > "$WORK_DIR/.hamoru/hamoru.yaml" <<'YAML'
+version: "1"
+providers:
+  - name: local
+    type: ollama
+    endpoint: http://127.0.0.1:11434
+YAML
+run_test "providers list (ollama-only config)" 0 "$BIN" providers list
+assert_contains "$STDOUT_FILE" "llama3.3" "ollama catalog contains llama3.3"
+restore_config
 
 # ---------------------------------------------------------------------------
 # GROUP 2: Online tests (requires HAMORU_ANTHROPIC_API_KEY)
@@ -255,6 +289,55 @@ steps:
 YAML
   run_test "run -w workflow (single step)" 0 \
     "$BIN" run -w "$WORK_DIR/smoke-workflow.yaml" "Reply with only the word OK"
+fi
+
+# ---------------------------------------------------------------------------
+# GROUP 3: Ollama tests (local LLM, no API key required)
+# ---------------------------------------------------------------------------
+
+echo ""
+echo "# GROUP 3: Ollama tests"
+
+OLLAMA_AVAILABLE=false
+if ! $OFFLINE; then
+  # 127.0.0.1 bypasses DNS (no rebinding risk). --max-time 2 prevents hangs.
+  if curl -sf --max-time 2 http://127.0.0.1:11434/api/tags > /dev/null 2>&1; then
+    OLLAMA_AVAILABLE=true
+  fi
+fi
+
+if $OLLAMA_AVAILABLE; then
+  # Swap to Ollama-only config for clean testing
+  cat > "$WORK_DIR/.hamoru/hamoru.yaml" <<'YAML'
+version: "1"
+providers:
+  - name: local
+    type: ollama
+    endpoint: http://127.0.0.1:11434
+YAML
+
+  run_test "providers test (ollama)" 0 "$BIN" providers test
+
+  # Extract first pulled model name (jq preferred, grep fallback)
+  OLLAMA_TAGS=$(curl -sf --max-time 2 http://127.0.0.1:11434/api/tags || true)
+  if command -v jq > /dev/null 2>&1; then
+    OLLAMA_MODEL=$(printf '%s\n' "$OLLAMA_TAGS" | jq -r '.models[0].name // empty')
+  else
+    OLLAMA_MODEL=$(printf '%s\n' "$OLLAMA_TAGS" | grep -o '"name":"[^"]*"' | head -1 | cut -d'"' -f4)
+  fi
+
+  if [[ -n "$OLLAMA_MODEL" ]]; then
+    # Portable timeout prevents hangs on slow inference (stock macOS lacks timeout)
+    run_test "run -m local:$OLLAMA_MODEL (ollama)" 0 \
+      ${TIMEOUT_CMD:+"$TIMEOUT_CMD" 60} "$BIN" run -m "local:$OLLAMA_MODEL" "Reply with only the word OK" --no-stream
+  else
+    skip_test "run -m local:<model> (ollama)" "no models available"
+  fi
+
+  restore_config
+else
+  skip_test "providers test (ollama)" "Ollama server not running"
+  skip_test "run -m local:<model> (ollama)" "Ollama server not running"
 fi
 
 # ---------------------------------------------------------------------------
