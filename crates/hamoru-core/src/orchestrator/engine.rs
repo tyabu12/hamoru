@@ -1,7 +1,8 @@
 //! Default implementation of the `OrchestrationEngine` trait.
 //!
-//! `DefaultOrchestrationEngine` executes workflows sequentially, using the
-//! Policy Engine for model selection and Telemetry for recording.
+//! `DefaultOrchestrationEngine` executes workflows using either a sequential
+//! loop (Phase 4a, for linear workflows and loops) or a DAG-based wave executor
+//! (Phase 4b, for parallel fan-out/fan-in workflows).
 
 use std::path::Path;
 use std::time::Instant;
@@ -48,10 +49,44 @@ impl OrchestrationEngine for DefaultOrchestrationEngine {
         providers: &ProviderRegistry,
         telemetry: &dyn TelemetryStore,
     ) -> Result<ExecutionResult> {
-        // Pre-loop: cache all models from providers
-        let all_models = collect_all_models(providers).await?;
+        // Build DAG to determine execution strategy
+        let dag = super::dag::WorkflowDag::build(&workflow.steps).map_err(|e| {
+            // Attach workflow name to DAG validation errors
+            if let HamoruError::WorkflowValidationError { reason, .. } = &e {
+                HamoruError::WorkflowValidationError {
+                    workflow: workflow.name.clone(),
+                    reason: reason.clone(),
+                }
+            } else {
+                e
+            }
+        })?;
 
-        // Pre-loop: load metrics cache for policy engine
+        // Linear DAGs use the sequential fast-path (supports transitions + loops)
+        if dag.is_linear() {
+            return self
+                .execute_sequential(workflow, task, policy_engine, providers, telemetry)
+                .await;
+        }
+
+        // Parallel DAGs use wave-based execution
+        self.execute_parallel(workflow, task, policy_engine, providers, telemetry, &dag)
+            .await
+    }
+}
+
+impl DefaultOrchestrationEngine {
+    /// Sequential execution: the original Phase 4a loop with transition-based
+    /// control flow. Supports loops and conditional branching.
+    async fn execute_sequential(
+        &self,
+        workflow: &Workflow,
+        task: &str,
+        policy_engine: &dyn PolicyEngine,
+        providers: &ProviderRegistry,
+        telemetry: &dyn TelemetryStore,
+    ) -> Result<ExecutionResult> {
+        let all_models = collect_all_models(providers).await?;
         let metrics_cache = telemetry.load_cache().await?;
 
         let mut current_step_idx = 0;
@@ -87,7 +122,6 @@ impl OrchestrationEngine for DefaultOrchestrationEngine {
 
             let step = &workflow.steps[current_step_idx];
 
-            // Apply context policy before building messages
             if !message_history.is_empty() {
                 message_history = apply_context_policy(&message_history, &step.context_policy);
             }
@@ -118,12 +152,10 @@ impl OrchestrationEngine for DefaultOrchestrationEngine {
                 Err(e) => return Err(e),
             };
 
-            // Accumulate metrics
             accumulated_cost += step_result.cost;
             accumulated_tokens += step_result.tokens.clone();
             accumulated_latency_ms += step_result.latency_ms;
 
-            // Guard: cost cap
             if let Some(max_cost) = workflow.max_cost
                 && accumulated_cost > max_cost
             {
@@ -134,7 +166,6 @@ impl OrchestrationEngine for DefaultOrchestrationEngine {
                 });
             }
 
-            // Update message history with step messages + raw assistant response
             let step_messages =
                 build_step_messages(&step.instruction, task, previous_output.as_deref());
             message_history.extend(step_messages);
@@ -146,7 +177,6 @@ impl OrchestrationEngine for DefaultOrchestrationEngine {
             previous_output = Some(step_result.output.clone());
             steps_executed.push(step_result);
 
-            // Follow transition
             match transition {
                 TransitionTarget::Complete => {
                     return Ok(ExecutionResult {
@@ -170,6 +200,229 @@ impl OrchestrationEngine for DefaultOrchestrationEngine {
                 }
             }
         }
+    }
+
+    /// Wave-based parallel execution for DAGs with fan-out/fan-in patterns.
+    /// Steps within a wave run concurrently via `futures::future::join_all`.
+    async fn execute_parallel(
+        &self,
+        workflow: &Workflow,
+        task: &str,
+        policy_engine: &dyn PolicyEngine,
+        providers: &ProviderRegistry,
+        telemetry: &dyn TelemetryStore,
+        dag: &super::dag::WorkflowDag,
+    ) -> Result<ExecutionResult> {
+        let all_models = collect_all_models(providers).await?;
+        let metrics_cache = telemetry.load_cache().await?;
+
+        let mut accumulated_cost: f64 = 0.0;
+        let mut accumulated_tokens = TokenUsage::default();
+        let mut accumulated_latency_ms: u64 = 0;
+        let mut steps_executed: Vec<StepResult> = Vec::new();
+        let mut message_history: Vec<Message> = Vec::new();
+        // Per-step outputs indexed by step index, for predecessor lookups
+        let mut step_outputs: Vec<Option<String>> = vec![None; dag.step_count];
+
+        for (wave_idx, wave) in dag.waves.iter().enumerate() {
+            // Pre-wave guard: check remaining budget before launching steps
+            if let Some(max_cost) = workflow.max_cost
+                && accumulated_cost >= max_cost
+            {
+                return Err(HamoruError::WorkflowCostExceeded {
+                    workflow: workflow.name.clone(),
+                    spent: accumulated_cost,
+                    limit: max_cost,
+                });
+            }
+
+            // Determine previous_output for each step in this wave
+            let previous_outputs: Vec<Option<String>> = wave
+                .iter()
+                .map(|&step_idx| {
+                    let preds = &dag.predecessors[step_idx];
+                    match preds.len() {
+                        0 => None,
+                        1 => step_outputs[preds[0]].clone(),
+                        _ => {
+                            // Fan-in: merge outputs from all predecessors
+                            let results: Vec<(String, String)> = preds
+                                .iter()
+                                .filter_map(|&pred_idx| {
+                                    step_outputs[pred_idx].as_ref().map(|output| {
+                                        (workflow.steps[pred_idx].name.clone(), output.clone())
+                                    })
+                                })
+                                .collect();
+                            Some(super::dag::merge_previous_outputs(&results))
+                        }
+                    }
+                })
+                .collect();
+
+            // Fork message history snapshot for this wave
+            let history_snapshot = message_history.clone();
+
+            let wave_start = Instant::now();
+
+            // Execute all steps in the wave
+            let futures: Vec<_> = wave
+                .iter()
+                .zip(previous_outputs.iter())
+                .map(|(&step_idx, prev_output)| {
+                    let step = &workflow.steps[step_idx];
+                    let history = &history_snapshot;
+                    execute_step(
+                        step,
+                        task,
+                        prev_output.as_deref(),
+                        history,
+                        policy_engine,
+                        providers,
+                        telemetry,
+                        &all_models,
+                        &metrics_cache,
+                    )
+                })
+                .collect();
+
+            let results = futures::future::join_all(futures).await;
+
+            let wave_latency_ms = wave_start.elapsed().as_millis() as u64;
+            accumulated_latency_ms += wave_latency_ms;
+
+            // Process wave results: collect successes, check for failures
+            let mut wave_results: Vec<(usize, StepResult, TransitionTarget, String)> = Vec::new();
+            let mut first_error: Option<HamoruError> = None;
+
+            for (i, result) in results.into_iter().enumerate() {
+                let step_idx = wave[i];
+                match result {
+                    Ok((step_result, transition, raw_content)) => {
+                        wave_results.push((step_idx, step_result, transition, raw_content));
+                    }
+                    Err(e) => {
+                        if first_error.is_none() {
+                            first_error = Some(e);
+                        }
+                    }
+                }
+            }
+
+            // If any step failed, return error with all partial results
+            if let Some(err) = first_error {
+                // Include successful steps from this wave in partial results
+                for (_, step_result, _, _) in &wave_results {
+                    steps_executed.push(step_result.clone());
+                }
+                let step_name = match &err {
+                    HamoruError::MidWorkflowFailure { step, .. } => step.clone(),
+                    _ => format!("wave-{wave_idx}"),
+                };
+                let source = match err {
+                    HamoruError::MidWorkflowFailure { source, .. } => source,
+                    other => Box::new(other),
+                };
+                return Err(HamoruError::MidWorkflowFailure {
+                    step: step_name,
+                    partial_results: steps_executed,
+                    source,
+                });
+            }
+
+            // Accumulate costs from all steps in the wave
+            let mut wave_cost = 0.0;
+            for (_, step_result, _, _) in &wave_results {
+                wave_cost += step_result.cost;
+                accumulated_tokens += step_result.tokens.clone();
+            }
+            accumulated_cost += wave_cost;
+
+            // Post-wave cost cap check
+            if let Some(max_cost) = workflow.max_cost
+                && accumulated_cost > max_cost
+            {
+                return Err(HamoruError::WorkflowCostExceeded {
+                    workflow: workflow.name.clone(),
+                    spent: accumulated_cost,
+                    limit: max_cost,
+                });
+            }
+
+            // Validate transition agreement for parallel steps
+            if wave_results.len() > 1 {
+                let transitions_with_names: Vec<(&str, &TransitionTarget)> = wave_results
+                    .iter()
+                    .filter(|(idx, _, _, _)| !workflow.steps[*idx].transitions.is_empty())
+                    .map(|(idx, _, target, _)| (workflow.steps[*idx].name.as_str(), target))
+                    .collect();
+
+                if transitions_with_names.len() > 1 {
+                    let first_target = transitions_with_names[0].1;
+                    for &(_name, target) in &transitions_with_names[1..] {
+                        if target != first_target {
+                            let step_names: Vec<&str> =
+                                transitions_with_names.iter().map(|(n, _)| *n).collect();
+                            return Err(HamoruError::ConditionEvaluationFailed {
+                                step: step_names.join(", "),
+                                reason: format!(
+                                    "Parallel steps {:?} transitioned to different targets. \
+                                     All parallel steps must agree. \
+                                     Review transition conditions.",
+                                    step_names
+                                ),
+                            });
+                        }
+                    }
+                }
+            }
+
+            // Store step outputs and build merged history
+            let mut merged_outputs: Vec<(String, String)> = Vec::new();
+            for (step_idx, step_result, _, raw_content) in wave_results {
+                step_outputs[step_idx] = Some(step_result.output.clone());
+                merged_outputs.push((workflow.steps[step_idx].name.clone(), raw_content));
+                steps_executed.push(step_result);
+            }
+
+            // Update message history with merged wave output
+            let merged_content = super::dag::merge_previous_outputs(&merged_outputs);
+            message_history = history_snapshot;
+            message_history.push(Message {
+                role: crate::provider::types::Role::Assistant,
+                content: crate::provider::types::MessageContent::Text(merged_content),
+            });
+        }
+
+        // All waves complete: determine final output
+        let final_output = if dag.waves.is_empty() {
+            String::new()
+        } else {
+            let last_wave = dag.waves.last().unwrap();
+            if last_wave.len() == 1 {
+                step_outputs[last_wave[0]].clone().unwrap_or_default()
+            } else {
+                // Merge outputs from last wave
+                let results: Vec<(String, String)> = last_wave
+                    .iter()
+                    .filter_map(|&idx| {
+                        step_outputs[idx]
+                            .as_ref()
+                            .map(|o| (workflow.steps[idx].name.clone(), o.clone()))
+                    })
+                    .collect();
+                super::dag::merge_previous_outputs(&results)
+            }
+        };
+
+        Ok(ExecutionResult {
+            steps_executed,
+            total_cost: accumulated_cost,
+            total_tokens: accumulated_tokens,
+            total_latency_ms: accumulated_latency_ms,
+            final_output,
+            terminated_reason: TerminationReason::Completed,
+        })
     }
 }
 
@@ -970,6 +1223,398 @@ mod tests {
             .await
             .unwrap();
 
+        assert_eq!(result.terminated_reason, TerminationReason::Completed);
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 4b: Parallel execution tests
+    // -----------------------------------------------------------------------
+
+    /// Helper to build a parallel workflow: A → [B, C] (fan-out)
+    fn fan_out_workflow() -> Workflow {
+        Workflow {
+            name: "fan-out".to_string(),
+            description: None,
+            max_iterations: 10,
+            max_cost: None,
+            default_condition_mode: ConditionMode::StatusLine,
+            steps: vec![
+                WorkflowStep {
+                    name: "generate".to_string(),
+                    tags: vec![],
+                    instruction: "{task}".to_string(),
+                    transitions: vec![],
+                    context_policy: ContextPolicy::KeepAll,
+                    condition_mode: ConditionMode::StatusLine,
+                    dependencies: Some(vec![]),
+                },
+                WorkflowStep {
+                    name: "review".to_string(),
+                    tags: vec![],
+                    instruction: "Review: {previous_output}".to_string(),
+                    transitions: vec![],
+                    context_policy: ContextPolicy::KeepAll,
+                    condition_mode: ConditionMode::StatusLine,
+                    dependencies: Some(vec!["generate".to_string()]),
+                },
+                WorkflowStep {
+                    name: "security".to_string(),
+                    tags: vec![],
+                    instruction: "Audit: {previous_output}".to_string(),
+                    transitions: vec![],
+                    context_policy: ContextPolicy::KeepAll,
+                    condition_mode: ConditionMode::StatusLine,
+                    dependencies: Some(vec!["generate".to_string()]),
+                },
+            ],
+        }
+    }
+
+    /// Helper to build a diamond workflow: A → [B, C] → D
+    fn diamond_workflow() -> Workflow {
+        Workflow {
+            name: "diamond".to_string(),
+            description: None,
+            max_iterations: 10,
+            max_cost: None,
+            default_condition_mode: ConditionMode::StatusLine,
+            steps: vec![
+                WorkflowStep {
+                    name: "generate".to_string(),
+                    tags: vec![],
+                    instruction: "{task}".to_string(),
+                    transitions: vec![],
+                    context_policy: ContextPolicy::KeepAll,
+                    condition_mode: ConditionMode::StatusLine,
+                    dependencies: Some(vec![]),
+                },
+                WorkflowStep {
+                    name: "review".to_string(),
+                    tags: vec![],
+                    instruction: "Review: {previous_output}".to_string(),
+                    transitions: vec![],
+                    context_policy: ContextPolicy::KeepAll,
+                    condition_mode: ConditionMode::StatusLine,
+                    dependencies: Some(vec!["generate".to_string()]),
+                },
+                WorkflowStep {
+                    name: "security".to_string(),
+                    tags: vec![],
+                    instruction: "Audit: {previous_output}".to_string(),
+                    transitions: vec![],
+                    context_policy: ContextPolicy::KeepAll,
+                    condition_mode: ConditionMode::StatusLine,
+                    dependencies: Some(vec!["generate".to_string()]),
+                },
+                WorkflowStep {
+                    name: "merge".to_string(),
+                    tags: vec![],
+                    instruction: "Synthesize: {previous_output}".to_string(),
+                    transitions: vec![],
+                    context_policy: ContextPolicy::KeepAll,
+                    condition_mode: ConditionMode::StatusLine,
+                    dependencies: Some(vec!["review".to_string(), "security".to_string()]),
+                },
+            ],
+        }
+    }
+
+    #[tokio::test]
+    async fn parallel_fan_out_fan_in() {
+        let provider = build_test_provider();
+        // Wave 1: generate, Wave 2: review + security (parallel)
+        provider.queue_chat_response(Ok(simple_response("generated code")));
+        provider.queue_chat_response(Ok(simple_response("looks good")));
+        provider.queue_chat_response(Ok(simple_response("no vulnerabilities")));
+        let registry = build_registry(provider);
+        let policy = DefaultPolicyEngine::new(test_policy_config());
+        let telemetry = InMemoryTelemetryStore::new();
+
+        let engine = DefaultOrchestrationEngine;
+        let result = engine
+            .execute(
+                &fan_out_workflow(),
+                "write code",
+                &policy,
+                &registry,
+                &telemetry,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.steps_executed.len(), 3);
+        assert_eq!(result.steps_executed[0].step_name, "generate");
+        assert_eq!(result.terminated_reason, TerminationReason::Completed);
+    }
+
+    #[tokio::test]
+    async fn parallel_diamond_dag() {
+        let provider = build_test_provider();
+        provider.queue_chat_response(Ok(simple_response("generated")));
+        provider.queue_chat_response(Ok(simple_response("review ok")));
+        provider.queue_chat_response(Ok(simple_response("secure")));
+        provider.queue_chat_response(Ok(simple_response("merged result")));
+        let registry = build_registry(provider);
+        let policy = DefaultPolicyEngine::new(test_policy_config());
+        let telemetry = InMemoryTelemetryStore::new();
+
+        let engine = DefaultOrchestrationEngine;
+        let result = engine
+            .execute(
+                &diamond_workflow(),
+                "build feature",
+                &policy,
+                &registry,
+                &telemetry,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.steps_executed.len(), 4);
+        assert_eq!(result.final_output, "merged result");
+        assert_eq!(result.terminated_reason, TerminationReason::Completed);
+    }
+
+    /// Build a response with non-zero token usage for cost testing.
+    fn response_with_tokens(content: &str, input: u64, output: u64) -> ChatResponse {
+        ChatResponse {
+            content: content.to_string(),
+            model: "test-model".to_string(),
+            usage: TokenUsage {
+                input_tokens: input,
+                output_tokens: output,
+                cache_creation_input_tokens: None,
+                cache_read_input_tokens: None,
+            },
+            latency_ms: 100,
+            finish_reason: FinishReason::Stop,
+            tool_calls: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn parallel_cost_accumulation() {
+        let provider = build_test_provider();
+        provider.queue_chat_response(Ok(response_with_tokens("gen", 100, 50)));
+        provider.queue_chat_response(Ok(response_with_tokens("rev", 100, 50)));
+        provider.queue_chat_response(Ok(response_with_tokens("sec", 100, 50)));
+        let registry = build_registry(provider);
+        let policy = DefaultPolicyEngine::new(test_policy_config());
+        let telemetry = InMemoryTelemetryStore::new();
+
+        let engine = DefaultOrchestrationEngine;
+        let result = engine
+            .execute(&fan_out_workflow(), "task", &policy, &registry, &telemetry)
+            .await
+            .unwrap();
+
+        // All 3 steps contribute cost (test model: 1/M input + 2/M output)
+        assert!(result.total_cost > 0.0);
+        let individual_sum: f64 = result.steps_executed.iter().map(|s| s.cost).sum();
+        assert!((result.total_cost - individual_sum).abs() < f64::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn parallel_cost_cap_exceeded() {
+        let provider = build_test_provider();
+        provider.queue_chat_response(Ok(response_with_tokens("gen", 1000, 500)));
+        provider.queue_chat_response(Ok(response_with_tokens("rev", 1000, 500)));
+        provider.queue_chat_response(Ok(response_with_tokens("sec", 1000, 500)));
+        let registry = build_registry(provider);
+        let policy = DefaultPolicyEngine::new(test_policy_config());
+        let telemetry = InMemoryTelemetryStore::new();
+
+        // Very low cost cap that will be exceeded by parallel wave costs
+        let mut workflow = fan_out_workflow();
+        workflow.max_cost = Some(0.000001);
+
+        let engine = DefaultOrchestrationEngine;
+        let err = engine
+            .execute(&workflow, "task", &policy, &registry, &telemetry)
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(err, HamoruError::WorkflowCostExceeded { .. }),
+            "Expected WorkflowCostExceeded, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn parallel_one_step_fails() {
+        let provider = build_test_provider();
+        provider.queue_chat_response(Ok(simple_response("gen")));
+        // One parallel step succeeds, one fails
+        provider.queue_chat_response(Ok(simple_response("rev ok")));
+        provider.queue_chat_response(Err(HamoruError::ProviderUnavailable {
+            provider: "test".to_string(),
+            reason: "timeout".to_string(),
+        }));
+        let registry = build_registry(provider);
+        let policy = DefaultPolicyEngine::new(test_policy_config());
+        let telemetry = InMemoryTelemetryStore::new();
+
+        let engine = DefaultOrchestrationEngine;
+        let err = engine
+            .execute(&fan_out_workflow(), "task", &policy, &registry, &telemetry)
+            .await
+            .unwrap_err();
+
+        match err {
+            HamoruError::MidWorkflowFailure {
+                partial_results, ..
+            } => {
+                // Should have generate + one successful parallel step
+                assert!(
+                    partial_results.len() >= 2,
+                    "Expected at least 2 partial results, got {}",
+                    partial_results.len()
+                );
+            }
+            other => panic!("Expected MidWorkflowFailure, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn parallel_merged_output_format() {
+        let provider = build_test_provider();
+        provider.queue_chat_response(Ok(simple_response("code here")));
+        provider.queue_chat_response(Ok(simple_response("looks good")));
+        provider.queue_chat_response(Ok(simple_response("no issues")));
+        provider.queue_chat_response(Ok(simple_response("all clear")));
+        let registry = build_registry(provider);
+        let policy = DefaultPolicyEngine::new(test_policy_config());
+        let telemetry = InMemoryTelemetryStore::new();
+
+        let engine = DefaultOrchestrationEngine;
+        let result = engine
+            .execute(
+                &diamond_workflow(),
+                "implement",
+                &policy,
+                &registry,
+                &telemetry,
+            )
+            .await
+            .unwrap();
+
+        // The merge step should have received labeled previous_output
+        assert_eq!(result.steps_executed.len(), 4);
+        assert_eq!(result.steps_executed[3].step_name, "merge");
+    }
+
+    #[tokio::test]
+    async fn parallel_single_branch_degenerates() {
+        // A single-step "parallel" wave should work like sequential
+        let provider = build_test_provider();
+        provider.queue_chat_response(Ok(simple_response("only output")));
+        let registry = build_registry(provider);
+        let policy = DefaultPolicyEngine::new(test_policy_config());
+        let telemetry = InMemoryTelemetryStore::new();
+
+        let workflow = Workflow {
+            name: "single-parallel".to_string(),
+            description: None,
+            max_iterations: 10,
+            max_cost: None,
+            default_condition_mode: ConditionMode::StatusLine,
+            steps: vec![WorkflowStep {
+                name: "only".to_string(),
+                tags: vec![],
+                instruction: "{task}".to_string(),
+                transitions: vec![],
+                context_policy: ContextPolicy::KeepAll,
+                condition_mode: ConditionMode::StatusLine,
+                dependencies: Some(vec![]),
+            }],
+        };
+
+        let engine = DefaultOrchestrationEngine;
+        let result = engine
+            .execute(&workflow, "do it", &policy, &registry, &telemetry)
+            .await
+            .unwrap();
+
+        assert_eq!(result.steps_executed.len(), 1);
+        assert_eq!(result.final_output, "only output");
+    }
+
+    #[tokio::test]
+    async fn telemetry_records_parallel_steps() {
+        let provider = build_test_provider();
+        provider.queue_chat_response(Ok(simple_response("gen")));
+        provider.queue_chat_response(Ok(simple_response("rev")));
+        provider.queue_chat_response(Ok(simple_response("sec")));
+        let registry = build_registry(provider);
+        let policy = DefaultPolicyEngine::new(test_policy_config());
+        let telemetry = InMemoryTelemetryStore::new();
+
+        let engine = DefaultOrchestrationEngine;
+        engine
+            .execute(&fan_out_workflow(), "task", &policy, &registry, &telemetry)
+            .await
+            .unwrap();
+
+        let entries = telemetry.all_entries().await;
+        assert_eq!(
+            entries.len(),
+            3,
+            "Expected 3 telemetry entries (1 sequential + 2 parallel)"
+        );
+    }
+
+    #[tokio::test]
+    async fn parallel_linear_dag_fast_path() {
+        // A workflow without explicit dependencies should use sequential path
+        let provider = build_test_provider();
+        provider.queue_chat_response(Ok(response_with_status_line("generated", "done")));
+        provider.queue_chat_response(Ok(simple_response("final")));
+        let registry = build_registry(provider);
+        let policy = DefaultPolicyEngine::new(test_policy_config());
+        let telemetry = InMemoryTelemetryStore::new();
+
+        let engine = DefaultOrchestrationEngine;
+        let result = engine
+            .execute(
+                &two_step_workflow(),
+                "test task",
+                &policy,
+                &registry,
+                &telemetry,
+            )
+            .await
+            .unwrap();
+
+        // Two-step workflow with transitions → sequential path
+        assert_eq!(result.steps_executed.len(), 2);
+        assert_eq!(result.terminated_reason, TerminationReason::Completed);
+    }
+
+    #[tokio::test]
+    async fn sequential_workflow_unchanged() {
+        // Existing Phase 4a workflow should produce identical results
+        let provider = build_test_provider();
+        provider.queue_chat_response(Ok(response_with_status_line("code", "done")));
+        provider.queue_chat_response(Ok(response_with_status_line("approved", "approved")));
+        let registry = build_registry(provider);
+        let policy = DefaultPolicyEngine::new(test_policy_config());
+        let telemetry = InMemoryTelemetryStore::new();
+
+        let engine = DefaultOrchestrationEngine;
+        let result = engine
+            .execute(
+                &review_loop_workflow(),
+                "review task",
+                &policy,
+                &registry,
+                &telemetry,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.steps_executed.len(), 2);
+        assert_eq!(result.steps_executed[0].step_name, "generate");
+        assert_eq!(result.steps_executed[1].step_name, "review");
         assert_eq!(result.terminated_reason, TerminationReason::Completed);
     }
 }
