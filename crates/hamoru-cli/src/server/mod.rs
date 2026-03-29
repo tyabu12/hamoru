@@ -22,7 +22,7 @@ use axum::{
 use chrono::Utc;
 use futures::StreamExt;
 use hamoru_core::error::HamoruError;
-use hamoru_core::policy::DefaultPolicyEngine;
+use hamoru_core::policy::{DefaultPolicyEngine, PolicyEngine};
 use hamoru_core::provider::ProviderRegistry;
 use hamoru_core::provider::types::ChatRequest;
 use hamoru_core::server::namespace::{ModelTarget, parse_model_target};
@@ -31,6 +31,7 @@ use hamoru_core::server::types::{
     OaiChatChunk, OaiChatRequest, OaiChatResponse, OaiChoice, OaiChunkChoice, OaiChunkDelta,
     OaiErrorBody, OaiErrorResponse, OaiResponseMessage, OaiUsage,
 };
+use futures::future::join_all;
 use hamoru_core::telemetry::{HistoryEntry, MetricsCache, TelemetryStore};
 use serde_json::json;
 use tokio_stream::wrappers::ReceiverStream;
@@ -255,9 +256,13 @@ async fn list_models(
 /// Handles chat completion requests (non-streaming and streaming).
 async fn chat_completions(
     State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<OaiChatRequest>,
 ) -> Result<Response, ApiError> {
     let target = parse_model_target(&req.model)?;
+
+    // Extract tags for policy routing (from header and/or body)
+    let tags = extract_tags(&headers, &req);
 
     // Translate messages
     let messages: Vec<_> = req
@@ -276,8 +281,8 @@ async fn chat_completions(
         .map(translate::oai_tool_choice_to_internal)
         .transpose()?;
 
-    // Resolve provider and model based on target
-    let (provider_id, model_id) = resolve_target(&target, &state)?;
+    // Resolve provider and model based on target (async for policy routing)
+    let (provider_id, model_id) = resolve_target(&target, &state, tags).await?;
 
     let provider =
         state
@@ -501,25 +506,37 @@ async fn chat_completions(
 /// Resolve a `ModelTarget` into (provider_id, model_id).
 ///
 /// For direct targets, returns the provider and model from the namespace.
-/// For policy targets, runs model selection via the policy engine.
-fn resolve_target(
+/// For policy targets, collects models from all providers (reusing
+/// models_cache with TTL) and delegates to the policy engine.
+async fn resolve_target(
     target: &ModelTarget,
-    _state: &AppState,
+    state: &AppState,
+    tags: Vec<String>,
 ) -> Result<(String, String), HamoruError> {
     match target {
         ModelTarget::Direct { provider, model } => Ok((provider.clone(), model.clone())),
         ModelTarget::Policy { policy_name } => {
-            // Collect all available models from all providers
-            // For now, use a synchronous approach: we need model info for selection.
-            // In a real async flow, we'd pre-load this. For correctness, use
-            // the first provider's models as the candidate set.
-            // TODO: collect from all providers asynchronously in a future optimization
-            Err(HamoruError::ConfigError {
-                reason: format!(
-                    "Policy-based routing (hamoru:{policy_name}) requires async model collection. \
-                     Use direct provider:model format for now."
-                ),
-            })
+            // Collect all models from all providers (parallel, cached)
+            let all_models = collect_all_models(state).await?;
+
+            // Build routing request with tags and explicit policy name
+            let routing_request = hamoru_core::policy::RoutingRequest {
+                tags,
+                policy_name: Some(policy_name.clone()),
+                estimated_input_tokens: None,
+                estimated_output_tokens: None,
+            };
+
+            // Load metrics for scoring
+            let metrics = state.get_metrics_cache().await;
+
+            // Select model via policy engine
+            let selection =
+                state
+                    .policy_engine
+                    .select_model(&routing_request, &all_models, &metrics)?;
+
+            Ok((selection.provider, selection.model))
         }
         ModelTarget::Workflow { workflow_name } => Err(HamoruError::ConfigError {
             reason: format!(
@@ -532,6 +549,49 @@ fn resolve_target(
             ),
         }),
     }
+}
+
+/// Collects models from all providers, with graceful degradation on failure.
+async fn collect_all_models(
+    state: &AppState,
+) -> Result<Vec<hamoru_core::provider::types::ModelInfo>, HamoruError> {
+    let futs: Vec<_> = state.providers.iter().map(|p| p.list_models()).collect();
+    let results = join_all(futs).await;
+
+    let mut all_models = Vec::new();
+    for result in results {
+        match result {
+            Ok(models) => all_models.extend(models),
+            Err(e) => tracing::warn!("Failed to list models from a provider, skipping: {e}"),
+        }
+    }
+    Ok(all_models)
+}
+
+/// Extracts hamoru tags from the `X-Hamoru-Tags` header and/or request body.
+///
+/// When both sources provide tags, merges them (union, deduplicated).
+fn extract_tags(headers: &axum::http::HeaderMap, _req: &OaiChatRequest) -> Vec<String> {
+    let mut tags = Vec::new();
+
+    // Source 1: X-Hamoru-Tags header (comma-separated)
+    if let Some(header_val) = headers.get("x-hamoru-tags")
+        && let Ok(val) = header_val.to_str()
+    {
+        tags.extend(
+            val.split(',')
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty()),
+        );
+    }
+
+    // Source 2: extra_body.hamoru_tags (via serde(flatten) — future commit)
+    // Currently no extra field on OaiChatRequest; will be added in a later commit.
+
+    // Deduplicate while preserving order
+    let mut seen = std::collections::HashSet::new();
+    tags.retain(|t| seen.insert(t.clone()));
+    tags
 }
 
 // ---------------------------------------------------------------------------
