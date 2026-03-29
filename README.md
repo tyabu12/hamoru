@@ -177,6 +177,28 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --all --check
 ```
 
+### E2E smoke test
+
+```bash
+# Offline only (no API key or Ollama needed)
+bash scripts/smoke-test.sh --offline
+
+# Auto-detect (runs Anthropic tests if API key is set, Ollama tests if server is running)
+bash scripts/smoke-test.sh
+
+# With Anthropic API tests
+printf "API key: " && read -rs HAMORU_ANTHROPIC_API_KEY && export HAMORU_ANTHROPIC_API_KEY
+bash scripts/smoke-test.sh
+
+# With Ollama tests (start Ollama in a separate terminal first)
+# Terminal 1: ollama serve
+# Terminal 2:
+bash scripts/smoke-test.sh
+
+# Verbose output (show stdout/stderr for all tests)
+bash scripts/smoke-test.sh --verbose
+```
+
 See [CONTRIBUTING.md](CONTRIBUTING.md) for full development setup and coding rules.
 
 ## 📁 Project Structure
