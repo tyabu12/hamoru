@@ -68,6 +68,17 @@ jobs:
 
           exit ${TEST_EXIT:-0}
 
+      - name: ShellCheck
+        run: shellcheck scripts/smoke-test.sh
+
+      # SECURITY: --offline is intentional — prevents the hamoru binary from making
+      # API calls (avoids accidental secret usage or network exfiltration).
+      # Do NOT remove --offline without reviewing secret/network implications.
+      - name: Smoke test (offline)
+        run: bash scripts/smoke-test.sh --offline --verbose
+        env:
+          HAMORU_BIN: target/debug/hamoru-cli
+
   security:
     name: Security
     runs-on: ubuntu-latest

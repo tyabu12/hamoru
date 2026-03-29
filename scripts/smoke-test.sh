@@ -92,6 +92,7 @@ echo "# Binary: $BIN"
 # Use WORK_DIR (not TMPDIR) to avoid shadowing the system temp directory variable.
 WORK_DIR="$(mktemp -d)"
 
+# shellcheck disable=SC2317  # Invoked indirectly via trap EXIT
 cleanup() {
   if [[ -n "${WORK_DIR:-}" && -d "$WORK_DIR" ]]; then
     rm -rf "$WORK_DIR"
@@ -134,15 +135,15 @@ run_test() {
     echo "[PASS] $name"
     PASSED=$((PASSED + 1))
     if $VERBOSE; then
-      [[ -s "$STDOUT_FILE" ]] && sed 's/^/  stdout: /' "$STDOUT_FILE"
-      [[ -s "$STDERR_FILE" ]] && sed 's/^/  stderr: /' "$STDERR_FILE"
+      if [[ -s "$STDOUT_FILE" ]]; then sed 's/^/  stdout: /' "$STDOUT_FILE"; fi
+      if [[ -s "$STDERR_FILE" ]]; then sed 's/^/  stderr: /' "$STDERR_FILE"; fi
     fi
   else
     echo "[FAIL] $name (expected exit=$expected_exit, got=$actual_exit)"
     FAILED=$((FAILED + 1))
     # Always show output on failure
-    [[ -s "$STDOUT_FILE" ]] && sed 's/^/  stdout: /' "$STDOUT_FILE"
-    [[ -s "$STDERR_FILE" ]] && sed 's/^/  stderr: /' "$STDERR_FILE"
+    if [[ -s "$STDOUT_FILE" ]]; then sed 's/^/  stdout: /' "$STDOUT_FILE"; fi
+    if [[ -s "$STDERR_FILE" ]]; then sed 's/^/  stderr: /' "$STDERR_FILE"; fi
   fi
 }
 
