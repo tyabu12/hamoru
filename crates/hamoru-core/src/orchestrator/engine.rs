@@ -16,13 +16,14 @@ use super::condition::{
 use super::context::{apply_context_policy, build_step_messages};
 use super::{
     ConditionMode, ExecutionResult, OrchestrationEngine, TerminationReason, TransitionTarget,
-    Workflow,
+    Workflow, WorkflowStep,
 };
 use crate::Result;
 use crate::error::{HamoruError, StepResult, sanitize_error};
 use crate::policy::{PolicyEngine, RoutingRequest};
 use crate::provider::types::{ChatRequest, Message, ToolChoice};
 use crate::provider::{ModelInfo, ProviderRegistry, TokenUsage};
+use crate::telemetry::MetricsCache;
 use crate::telemetry::{HistoryEntry, TelemetryStore};
 
 /// Stateless orchestration engine.
@@ -86,103 +87,41 @@ impl OrchestrationEngine for DefaultOrchestrationEngine {
 
             let step = &workflow.steps[current_step_idx];
 
-            // Model selection via Policy Engine
-            let routing_request = RoutingRequest {
-                tags: step.tags.clone(),
-                ..Default::default()
-            };
-            let selection =
-                policy_engine.select_model(&routing_request, &all_models, &metrics_cache)?;
-
-            let provider =
-                providers
-                    .get(&selection.provider)
-                    .ok_or_else(|| HamoruError::ConfigError {
-                        reason: format!(
-                            "Provider '{}' selected by policy but not found in registry.",
-                            selection.provider
-                        ),
-                    })?;
-
-            // Build step messages
-            let step_messages =
-                build_step_messages(&step.instruction, task, previous_output.as_deref());
-
-            // Apply context policy to accumulated history + new messages
+            // Apply context policy before building messages
             if !message_history.is_empty() {
                 message_history = apply_context_policy(&message_history, &step.context_policy);
             }
 
-            // Build full message array
-            let mut full_messages = message_history.clone();
-            full_messages.extend(step_messages.clone());
-
-            // Prepare tools for condition evaluation
-            let (tools, tool_choice) = if step.condition_mode == ConditionMode::ToolCalling
-                && !step.transitions.is_empty()
+            let (step_result, transition, raw_content) = match execute_step(
+                step,
+                task,
+                previous_output.as_deref(),
+                &message_history,
+                policy_engine,
+                providers,
+                telemetry,
+                &all_models,
+                &metrics_cache,
+            )
+            .await
             {
-                let valid_statuses: Vec<&str> = step
-                    .transitions
-                    .iter()
-                    .map(|t| t.condition.as_str())
-                    .collect();
-                let tool = build_report_status_tool(&valid_statuses);
-                (
-                    Some(vec![tool]),
-                    Some(ToolChoice::Tool {
-                        name: REPORT_STATUS_TOOL_NAME.to_string(),
-                    }),
-                )
-            } else {
-                (None, None)
-            };
-
-            // Build ChatRequest
-            let chat_request = ChatRequest {
-                model: selection.model.clone(),
-                messages: full_messages.clone(),
-                temperature: None,
-                max_tokens: None,
-                tools,
-                tool_choice,
-                stream: false, // All intermediate steps are buffered
-            };
-
-            // Execute LLM call
-            let start = Instant::now();
-            let response = match provider.chat(chat_request).await {
-                Ok(r) => r,
-                Err(e) => {
-                    let step_latency_ms = start.elapsed().as_millis() as u64;
-                    // Record failed call telemetry
-                    record_telemetry_failed(
-                        telemetry,
-                        &selection.provider,
-                        &selection.model,
-                        step_latency_ms,
-                        &step.tags,
-                    )
-                    .await;
+                Ok(result) => result,
+                Err(HamoruError::MidWorkflowFailure {
+                    step: s, source, ..
+                }) => {
                     return Err(HamoruError::MidWorkflowFailure {
-                        step: step.name.clone(),
+                        step: s,
                         partial_results: steps_executed,
-                        source: sanitize_error(e),
+                        source,
                     });
                 }
+                Err(e) => return Err(e),
             };
-            let step_latency_ms = start.elapsed().as_millis() as u64;
 
-            // Calculate cost from cached model list
-            let step_cost = all_models
-                .iter()
-                .find(|m| m.id == selection.model && m.provider == selection.provider)
-                .map(|mi| response.usage.calculate_cost(mi))
-                .unwrap_or(0.0);
-
-            // Accumulate
-            accumulated_cost += step_cost;
-            accumulated_tokens += response.usage.clone();
-            accumulated_latency_ms += step_latency_ms;
+            // Accumulate metrics
+            accumulated_cost += step_result.cost;
+            accumulated_tokens += step_result.tokens.clone();
+            accumulated_latency_ms += step_result.latency_ms;
 
             // Guard: cost cap
             if let Some(max_cost) = workflow.max_cost
@@ -195,96 +134,20 @@ impl OrchestrationEngine for DefaultOrchestrationEngine {
                 });
             }
 
-            // Handle steps with no transitions as implicit COMPLETE
-            if step.transitions.is_empty() {
-                let step_result = StepResult {
-                    step_name: step.name.clone(),
-                    output: response.content.clone(),
-                    tokens: response.usage.clone(),
-                    cost: step_cost,
-                    latency_ms: step_latency_ms,
-                    model_used: selection.model.clone(),
-                    policy_applied: selection.policy_applied.clone(),
-                };
-                steps_executed.push(step_result);
-
-                // Record telemetry
-                record_telemetry(
-                    telemetry,
-                    &selection.provider,
-                    &selection.model,
-                    &response.usage,
-                    step_cost,
-                    step_latency_ms,
-                    &step.tags,
-                )
-                .await;
-
-                return Ok(ExecutionResult {
-                    steps_executed,
-                    total_cost: accumulated_cost,
-                    total_tokens: accumulated_tokens,
-                    total_latency_ms: accumulated_latency_ms,
-                    final_output: response.content,
-                    terminated_reason: TerminationReason::Completed,
-                });
-            }
-
-            // Evaluate condition
-            let step_output = evaluate_condition(&response, &step.condition_mode, &step.name)?;
-
-            // Match transition
-            let target =
-                match_transition(&step_output.status, &step.transitions).ok_or_else(|| {
-                    HamoruError::ConditionEvaluationFailed {
-                        step: step.name.clone(),
-                        reason: format!(
-                            "Status '{}' does not match any transition. \
-                             Valid conditions: {:?}.",
-                            step_output.status,
-                            step.transitions
-                                .iter()
-                                .map(|t| &t.condition)
-                                .collect::<Vec<_>>()
-                        ),
-                    }
-                })?;
-
-            // Record step result
-            let step_result = StepResult {
-                step_name: step.name.clone(),
-                output: step_output.content.clone(),
-                tokens: response.usage.clone(),
-                cost: step_cost,
-                latency_ms: step_latency_ms,
-                model_used: selection.model.clone(),
-                policy_applied: selection.policy_applied.clone(),
-            };
-            steps_executed.push(step_result);
-
-            // Record telemetry
-            record_telemetry(
-                telemetry,
-                &selection.provider,
-                &selection.model,
-                &response.usage,
-                step_cost,
-                step_latency_ms,
-                &step.tags,
-            )
-            .await;
-
-            // Update message history
-            message_history = full_messages;
+            // Update message history with step messages + raw assistant response
+            let step_messages =
+                build_step_messages(&step.instruction, task, previous_output.as_deref());
+            message_history.extend(step_messages);
             message_history.push(Message {
                 role: crate::provider::types::Role::Assistant,
-                content: crate::provider::types::MessageContent::Text(response.content.clone()),
+                content: crate::provider::types::MessageContent::Text(raw_content),
             });
 
-            previous_output = Some(step_output.content);
+            previous_output = Some(step_result.output.clone());
+            steps_executed.push(step_result);
 
             // Follow transition
-            match target {
+            match transition {
                 TransitionTarget::Complete => {
                     return Ok(ExecutionResult {
                         steps_executed,
@@ -308,6 +171,166 @@ impl OrchestrationEngine for DefaultOrchestrationEngine {
             }
         }
     }
+}
+
+/// Executes a single workflow step: model selection, LLM call, condition
+/// evaluation, transition matching, and telemetry recording.
+///
+/// Returns `(StepResult, TransitionTarget, raw_response_content)`:
+/// - `StepResult.output`: content after condition evaluation (STATUS stripped)
+/// - `TransitionTarget`: matched transition or `Complete` for no-transitions steps
+/// - `String`: raw assistant response for message history (pre-condition-evaluation)
+#[allow(clippy::too_many_arguments)] // Intentional: all borrowed refs needed for parallel execution via join_all
+async fn execute_step(
+    step: &WorkflowStep,
+    task: &str,
+    previous_output: Option<&str>,
+    message_history: &[Message],
+    policy_engine: &dyn PolicyEngine,
+    providers: &ProviderRegistry,
+    telemetry: &dyn TelemetryStore,
+    all_models: &[ModelInfo],
+    metrics_cache: &MetricsCache,
+) -> Result<(StepResult, TransitionTarget, String)> {
+    // Model selection via Policy Engine
+    let routing_request = RoutingRequest {
+        tags: step.tags.clone(),
+        ..Default::default()
+    };
+    let selection = policy_engine.select_model(&routing_request, all_models, metrics_cache)?;
+
+    let provider = providers
+        .get(&selection.provider)
+        .ok_or_else(|| HamoruError::ConfigError {
+            reason: format!(
+                "Provider '{}' selected by policy but not found in registry.",
+                selection.provider
+            ),
+        })?;
+
+    // Build step messages
+    let step_messages = build_step_messages(&step.instruction, task, previous_output);
+
+    // Build full message array
+    let mut full_messages = message_history.to_vec();
+    full_messages.extend(step_messages);
+
+    // Prepare tools for condition evaluation
+    let (tools, tool_choice) =
+        if step.condition_mode == ConditionMode::ToolCalling && !step.transitions.is_empty() {
+            let valid_statuses: Vec<&str> = step
+                .transitions
+                .iter()
+                .map(|t| t.condition.as_str())
+                .collect();
+            let tool = build_report_status_tool(&valid_statuses);
+            (
+                Some(vec![tool]),
+                Some(ToolChoice::Tool {
+                    name: REPORT_STATUS_TOOL_NAME.to_string(),
+                }),
+            )
+        } else {
+            (None, None)
+        };
+
+    // Build ChatRequest
+    let chat_request = ChatRequest {
+        model: selection.model.clone(),
+        messages: full_messages,
+        temperature: None,
+        max_tokens: None,
+        tools,
+        tool_choice,
+        stream: false, // All intermediate steps are buffered
+    };
+
+    // Execute LLM call
+    let start = Instant::now();
+    let response = match provider.chat(chat_request).await {
+        Ok(r) => r,
+        Err(e) => {
+            let step_latency_ms = start.elapsed().as_millis() as u64;
+            record_telemetry_failed(
+                telemetry,
+                &selection.provider,
+                &selection.model,
+                step_latency_ms,
+                &step.tags,
+            )
+            .await;
+            return Err(HamoruError::MidWorkflowFailure {
+                step: step.name.clone(),
+                partial_results: vec![],
+                source: sanitize_error(e),
+            });
+        }
+    };
+    let step_latency_ms = start.elapsed().as_millis() as u64;
+
+    // Calculate cost from cached model list
+    let step_cost = all_models
+        .iter()
+        .find(|m| m.id == selection.model && m.provider == selection.provider)
+        .map(|mi| response.usage.calculate_cost(mi))
+        .unwrap_or(0.0);
+
+    // Record telemetry
+    record_telemetry(
+        telemetry,
+        &selection.provider,
+        &selection.model,
+        &response.usage,
+        step_cost,
+        step_latency_ms,
+        &step.tags,
+    )
+    .await;
+
+    // Handle steps with no transitions as implicit COMPLETE
+    if step.transitions.is_empty() {
+        let step_result = StepResult {
+            step_name: step.name.clone(),
+            output: response.content.clone(),
+            tokens: response.usage.clone(),
+            cost: step_cost,
+            latency_ms: step_latency_ms,
+            model_used: selection.model,
+            policy_applied: selection.policy_applied,
+        };
+        return Ok((step_result, TransitionTarget::Complete, response.content));
+    }
+
+    // Evaluate condition
+    let step_output = evaluate_condition(&response, &step.condition_mode, &step.name)?;
+
+    // Match transition
+    let target = match_transition(&step_output.status, &step.transitions).ok_or_else(|| {
+        HamoruError::ConditionEvaluationFailed {
+            step: step.name.clone(),
+            reason: format!(
+                "Status '{}' does not match any transition. \
+                     Valid conditions: {:?}.",
+                step_output.status,
+                step.transitions
+                    .iter()
+                    .map(|t| &t.condition)
+                    .collect::<Vec<_>>()
+            ),
+        }
+    })?;
+
+    let step_result = StepResult {
+        step_name: step.name.clone(),
+        output: step_output.content,
+        tokens: response.usage.clone(),
+        cost: step_cost,
+        latency_ms: step_latency_ms,
+        model_used: selection.model,
+        policy_applied: selection.policy_applied,
+    };
+
+    Ok((step_result, target.clone(), response.content))
 }
 
 /// Collects models from all providers, skipping unavailable ones.
