@@ -91,11 +91,13 @@ After fetching the issue, check for an existing plan comment:
   Set `ISSUE_NUMBER=N`.
 
 **Otherwise** (new task — always create issue, because checkpoint sync and resumption require a `COMMENT_ID` on a real Issue):
+- Determine `LABEL` from `TASK_TYPE` using the label mapping table in Step 5.
 - Create a new issue:
   ```bash
   ISSUE_URL=$(gh issue create \
     --title "{EMOJI} {TASK_TYPE}: {TITLE}" \
     --assignee "@me" \
+    --label "$LABEL" \
     --body "$(cat <<'HAMORU_ISSUE'
   ## Summary
   {1-3 sentence summary from plan}
