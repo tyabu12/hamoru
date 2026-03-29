@@ -190,7 +190,7 @@ async fn chat_completions(
             stream: true,
         };
 
-        let response_id = format!("chatcmpl-{}", uuid::Uuid::new_v4());
+        let response_id = format!("chatcmpl-{:032x}", rand::random::<u128>());
         let created = Utc::now().timestamp();
         let model_label = format!("{provider_id}:{model_id}");
         let stream = provider.chat_stream(chat_request).await?;
@@ -331,7 +331,7 @@ async fn chat_completions(
         // Build OpenAI response first, then record telemetry in background
         // to avoid adding model_info lookup latency to the response path.
         let (content, oai_tool_calls) = translate::chat_response_to_oai_parts(&response);
-        let response_id = format!("chatcmpl-{}", uuid::Uuid::new_v4());
+        let response_id = format!("chatcmpl-{:032x}", rand::random::<u128>());
 
         let oai_response = OaiChatResponse {
             id: response_id,
