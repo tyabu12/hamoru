@@ -3,7 +3,6 @@
 //! Routes requests through hamoru's provider/policy/orchestration layers
 //! and returns responses in the OpenAI wire format.
 
-
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -55,7 +54,9 @@ pub fn build_router(state: Arc<AppState>) -> Router {
 /// Lists available models in the OpenAI format.
 ///
 /// Includes direct provider models and policy-based virtual models.
-async fn list_models(State(state): State<Arc<AppState>>) -> Result<Json<serde_json::Value>, ApiError> {
+async fn list_models(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
     let mut models = Vec::new();
 
     // Direct provider models: <provider>:<model>
@@ -120,12 +121,14 @@ async fn chat_completions(
     // Resolve provider and model based on target
     let (provider_id, model_id) = resolve_target(&target, &state)?;
 
-    let provider = state.providers.get(&provider_id).ok_or_else(|| {
-        HamoruError::ProviderUnavailable {
-            provider: provider_id.clone(),
-            reason: "Provider not found in registry".to_string(),
-        }
-    })?;
+    let provider =
+        state
+            .providers
+            .get(&provider_id)
+            .ok_or_else(|| HamoruError::ProviderUnavailable {
+                provider: provider_id.clone(),
+                reason: "Provider not found in registry".to_string(),
+            })?;
 
     if req.stream {
         // Streaming path
@@ -202,13 +205,15 @@ async fn chat_completions(
                                     } else {
                                         Some(chunk.delta)
                                     },
-                                    tool_calls: chunk.tool_calls.as_ref().map(|tcs| {
-                                        translate::tool_calls_to_oai(tcs)
-                                    }),
+                                    tool_calls: chunk
+                                        .tool_calls
+                                        .as_ref()
+                                        .map(|tcs| translate::tool_calls_to_oai(tcs)),
                                 },
-                                finish_reason: chunk.finish_reason.as_ref().map(|fr| {
-                                    translate::finish_reason_to_oai(fr).to_string()
-                                }),
+                                finish_reason: chunk
+                                    .finish_reason
+                                    .as_ref()
+                                    .map(|fr| translate::finish_reason_to_oai(fr).to_string()),
                             }],
                             usage: chunk.usage.as_ref().map(|u| OaiUsage {
                                 prompt_tokens: u.input_tokens,
@@ -253,8 +258,7 @@ async fn chat_completions(
         });
 
         let sse_stream = ReceiverStream::new(rx);
-        let sse = Sse::new(sse_stream)
-            .keep_alive(axum::response::sse::KeepAlive::default());
+        let sse = Sse::new(sse_stream).keep_alive(axum::response::sse::KeepAlive::default());
 
         Ok(sse.into_response())
     } else {
@@ -310,8 +314,7 @@ async fn chat_completions(
                     content,
                     tool_calls: oai_tool_calls,
                 },
-                finish_reason: translate::finish_reason_to_oai(&response.finish_reason)
-                    .to_string(),
+                finish_reason: translate::finish_reason_to_oai(&response.finish_reason).to_string(),
             }],
             usage: OaiUsage {
                 prompt_tokens: response.usage.input_tokens,
@@ -389,30 +392,38 @@ impl IntoResponse for ApiError {
 /// Map `HamoruError` variants to (HTTP status, error type, optional code).
 fn classify_error(err: &HamoruError) -> (StatusCode, &'static str, Option<&'static str>) {
     match err {
-        HamoruError::ModelNotFound { .. } => {
-            (StatusCode::NOT_FOUND, "not_found_error", Some("model_not_found"))
-        }
-        HamoruError::CredentialNotFound { .. } => {
-            (StatusCode::UNAUTHORIZED, "authentication_error", Some("missing_credentials"))
-        }
-        HamoruError::CostLimitExceeded { .. } => {
-            (StatusCode::TOO_MANY_REQUESTS, "rate_limit_error", Some("cost_limit_exceeded"))
-        }
-        HamoruError::NoModelSatisfiesPolicy { .. } => {
-            (StatusCode::BAD_REQUEST, "invalid_request_error", Some("no_model_available"))
-        }
-        HamoruError::ProviderUnavailable { .. } => {
-            (StatusCode::SERVICE_UNAVAILABLE, "server_error", Some("provider_unavailable"))
-        }
-        HamoruError::ProviderRequestFailed { .. } => {
-            (StatusCode::BAD_GATEWAY, "server_error", Some("provider_request_failed"))
-        }
-        HamoruError::ConfigError { .. } => {
-            (StatusCode::BAD_REQUEST, "invalid_request_error", None)
-        }
-        _ => {
-            (StatusCode::INTERNAL_SERVER_ERROR, "server_error", None)
-        }
+        HamoruError::ModelNotFound { .. } => (
+            StatusCode::NOT_FOUND,
+            "not_found_error",
+            Some("model_not_found"),
+        ),
+        HamoruError::CredentialNotFound { .. } => (
+            StatusCode::UNAUTHORIZED,
+            "authentication_error",
+            Some("missing_credentials"),
+        ),
+        HamoruError::CostLimitExceeded { .. } => (
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limit_error",
+            Some("cost_limit_exceeded"),
+        ),
+        HamoruError::NoModelSatisfiesPolicy { .. } => (
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            Some("no_model_available"),
+        ),
+        HamoruError::ProviderUnavailable { .. } => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "server_error",
+            Some("provider_unavailable"),
+        ),
+        HamoruError::ProviderRequestFailed { .. } => (
+            StatusCode::BAD_GATEWAY,
+            "server_error",
+            Some("provider_request_failed"),
+        ),
+        HamoruError::ConfigError { .. } => (StatusCode::BAD_REQUEST, "invalid_request_error", None),
+        _ => (StatusCode::INTERNAL_SERVER_ERROR, "server_error", None),
     }
 }
 
@@ -481,7 +492,9 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
         assert_eq!(json["object"], "list");
@@ -511,7 +524,9 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
         // Should still have policy model
@@ -528,7 +543,9 @@ mod tests {
         let resp = err.into_response();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["type"], "not_found_error");
         assert_eq!(json["error"]["code"], "model_not_found");
@@ -642,13 +659,18 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
 
         assert_eq!(json["object"], "chat.completion");
         assert_eq!(json["choices"][0]["finish_reason"], "stop");
         assert_eq!(json["choices"][0]["message"]["role"], "assistant");
-        assert_eq!(json["choices"][0]["message"]["content"], "Hello! How can I help?");
+        assert_eq!(
+            json["choices"][0]["message"]["content"],
+            "Hello! How can I help?"
+        );
         assert_eq!(json["usage"]["prompt_tokens"], 10);
         assert_eq!(json["usage"]["completion_tokens"], 8);
         assert!(json["id"].as_str().unwrap().starts_with("chatcmpl-"));
@@ -692,7 +714,9 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
 
         assert_eq!(json["choices"][0]["finish_reason"], "tool_calls");
@@ -795,12 +819,20 @@ mod tests {
         );
 
         // Read SSE body
-        let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body_str = String::from_utf8_lossy(&body_bytes);
 
         // Verify SSE events contain data lines
-        assert!(body_str.contains("data:"), "SSE body should contain data lines");
-        assert!(body_str.contains("[DONE]"), "SSE body should end with [DONE]");
+        assert!(
+            body_str.contains("data:"),
+            "SSE body should contain data lines"
+        );
+        assert!(
+            body_str.contains("[DONE]"),
+            "SSE body should end with [DONE]"
+        );
 
         // Parse the content chunks
         let data_lines: Vec<&str> = body_str

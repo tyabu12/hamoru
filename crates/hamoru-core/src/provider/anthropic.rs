@@ -147,7 +147,10 @@ fn build_anthropic_request(request: &ChatRequest, default_max_tokens: u64) -> An
                             "name": name,
                             "input": input,
                         }),
-                        ContentPart::ToolResult { tool_use_id, content } => serde_json::json!({
+                        ContentPart::ToolResult {
+                            tool_use_id,
+                            content,
+                        } => serde_json::json!({
                             "type": "tool_result",
                             "tool_use_id": tool_use_id,
                             "content": content,

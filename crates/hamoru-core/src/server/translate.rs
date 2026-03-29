@@ -44,9 +44,7 @@ pub fn oai_message_to_internal(msg: &OaiMessage) -> Result<Message, HamoruError>
         if let Some(ref text) = msg.content
             && !text.is_empty()
         {
-            parts.push(ContentPart::Text {
-                text: text.clone(),
-            });
+            parts.push(ContentPart::Text { text: text.clone() });
         }
         // Convert tool_calls to ToolUse content parts
         for tc in tool_calls {
@@ -80,9 +78,7 @@ pub fn oai_message_to_internal(msg: &OaiMessage) -> Result<Message, HamoruError>
 }
 
 /// Translate OpenAI tool definitions to internal `Tool` types.
-pub fn oai_tools_to_internal(
-    tools: &[super::types::OaiTool],
-) -> Vec<Tool> {
+pub fn oai_tools_to_internal(tools: &[super::types::OaiTool]) -> Vec<Tool> {
     tools
         .iter()
         .map(|t| Tool {
@@ -94,9 +90,7 @@ pub fn oai_tools_to_internal(
 }
 
 /// Translate OpenAI tool_choice to internal `ToolChoice`.
-pub fn oai_tool_choice_to_internal(
-    choice: &OaiToolChoice,
-) -> Result<ToolChoice, HamoruError> {
+pub fn oai_tool_choice_to_internal(choice: &OaiToolChoice) -> Result<ToolChoice, HamoruError> {
     match choice {
         OaiToolChoice::Mode(mode) => match mode.as_str() {
             "auto" => Ok(ToolChoice::Auto),

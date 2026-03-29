@@ -45,7 +45,11 @@ impl DefaultPolicyEngine {
     ///
     /// Used by the API server to populate `GET /v1/models` with virtual model entries.
     pub fn list_policies(&self) -> Vec<&str> {
-        self.config.policies.iter().map(|p| p.name.as_str()).collect()
+        self.config
+            .policies
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect()
     }
 
     /// Resolves which policy to apply for a given request.

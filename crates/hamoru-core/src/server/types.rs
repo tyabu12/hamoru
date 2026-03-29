@@ -337,7 +337,10 @@ mod tests {
             },
         };
         let json = serde_json::to_value(&resp).unwrap();
-        assert_eq!(json["choices"][0]["message"]["tool_calls"][0]["type"], "function");
+        assert_eq!(
+            json["choices"][0]["message"]["tool_calls"][0]["type"],
+            "function"
+        );
         assert_eq!(
             json["choices"][0]["message"]["tool_calls"][0]["function"]["name"],
             "get_weather"
