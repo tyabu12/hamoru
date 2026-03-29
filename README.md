@@ -71,12 +71,93 @@ See [design-plan.md](docs/design-plan.md) for the full roadmap.
 ## 🚀 Quick Start
 
 ```bash
-# Build
 cargo build
+cargo run -p hamoru-cli -- init
+```
 
-# Run CLI
-cargo run -p hamoru-cli -- --help
+### Option A: Local LLM (no API key required)
 
+Install [Ollama](https://ollama.com), then add it to your config (`.hamoru/hamoru.yaml`):
+
+```yaml
+providers:
+  - name: local
+    type: ollama
+    endpoint: http://localhost:11434
+    models:
+      - llama3.2
+```
+
+```bash
+ollama pull llama3.2
+cargo run -p hamoru-cli -- providers test
+cargo run -p hamoru-cli -- run -m local:llama3.2 "Hello, world!"
+```
+
+### Option B: Cloud LLM (Anthropic Claude)
+
+Set your API key as an environment variable:
+
+```bash
+# Recommended: read without echoing to avoid shell history leakage
+printf "Enter API key: " && read -rs HAMORU_ANTHROPIC_API_KEY && export HAMORU_ANTHROPIC_API_KEY
+echo  # newline after silent input
+```
+
+> **Security note:** Avoid typing API keys directly in commands (e.g., `export KEY=sk-ant-...`) — they may be saved in your shell history file. Use `read -rs` as shown above, or load from a secrets manager.
+
+```bash
+cargo run -p hamoru-cli -- providers test
+cargo run -p hamoru-cli -- run -m claude:claude-sonnet-4-6 "Hello, world!"
+```
+
+### More examples
+
+```bash
+# Policy-based model selection
+cargo run -p hamoru-cli -- run -p cost-optimized "Summarize this text"
+
+# Tag-based routing
+cargo run -p hamoru-cli -- run --tags review "Review this code for security issues"
+
+# Multi-step workflow
+cargo run -p hamoru-cli -- run -w workflow.yaml "Implement an auth API"
+```
+
+## 📖 Commands
+
+### Top-level commands
+
+| Command | Description | Status |
+|---------|-------------|--------|
+| `hamoru init` | Initialize project (creates `.hamoru/` with config templates) | ✅ Implemented |
+| `hamoru run <prompt>` | Execute a prompt, workflow, or collaboration | ✅ Implemented |
+| `hamoru plan` | Telemetry-based cost impact prediction | ✅ Implemented |
+| `hamoru metrics --period 7d` | View cost and performance metrics | ✅ Implemented |
+| `hamoru providers list` | List configured providers and their models | ✅ Implemented |
+| `hamoru providers test` | Test connectivity to all configured providers | ✅ Implemented |
+| `hamoru telemetry show` | Show telemetry store details | ✅ Implemented |
+| `hamoru telemetry pull` | Sync telemetry from remote storage | 🔲 Stub (requires remote config) |
+| `hamoru telemetry push` | Sync telemetry to remote storage | 🔲 Stub (requires remote config) |
+| `hamoru status` | Show current configuration overview | 🔲 Stub |
+| `hamoru serve` | Start OpenAI-compatible API server | 🔲 Stub (Phase 5) |
+| `hamoru agents list` | List agent definitions | 🔲 Stub (Phase 6) |
+| `hamoru agents test <name>` | Dry-run a collaboration pattern | 🔲 Stub (Phase 6) |
+
+### `hamoru run` options
+
+| Flag | Description | Status |
+|------|-------------|--------|
+| `-m provider:model` | Direct model selection (e.g., `claude:claude-sonnet-4-6`) | ✅ |
+| `-p policy-name` | Policy-based model selection (e.g., `cost-optimized`) | ✅ |
+| `--tags tag1,tag2` | Tag-based routing (can combine with `-p`) | ✅ |
+| `-w workflow.yaml` | Execute a multi-step workflow from YAML | ✅ |
+| `-a collaboration` | Execute an agent collaboration pattern | 🔲 Phase 6 |
+| `--no-stream` | Disable streaming (print full response at once) | ✅ |
+
+## 🛠️ Development
+
+```bash
 # Run tests
 cargo test --all-targets
 
@@ -84,6 +165,8 @@ cargo test --all-targets
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all --check
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for full development setup and coding rules.
 
 ## 📁 Project Structure
 
@@ -108,10 +191,6 @@ hamoru/
 ├── CONTRIBUTING.md           # Development guidelines
 └── SECURITY.md               # Security policy
 ```
-
-## 🤝 Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, coding rules, and testing policy.
 
 ## 📄 License
 

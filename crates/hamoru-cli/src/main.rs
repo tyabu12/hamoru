@@ -903,7 +903,10 @@ async fn init_project() -> Result<(), HamoruError> {
 
     println!();
     println!("Next steps:");
-    println!("  1. Set your API key: export HAMORU_ANTHROPIC_API_KEY=sk-...");
+    println!("  1. Set your API key (avoid shell history leakage):");
+    println!(
+        "     printf 'API key: ' && read -rs HAMORU_ANTHROPIC_API_KEY && export HAMORU_ANTHROPIC_API_KEY"
+    );
     println!("  2. Test connectivity: hamoru providers test");
     println!("  3. Run a prompt: hamoru run -m claude:claude-sonnet-4-6 'Hello'");
     println!("  4. Use policies: hamoru run -p cost-optimized 'Hello'");
