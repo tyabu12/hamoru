@@ -1330,17 +1330,17 @@ hamoru run -w parallel-review "Review this code"
 **Goal**: OpenAI-compatible API server
 
 **Deliverables:**
-- [ ] `POST /v1/chat/completions` (normal + SSE streaming with tool_calls passthrough)
-- [ ] `GET /v1/models` (expose policies/workflows/agent collaborations as models)
-- [ ] model field namespace resolution
-- [ ] Tool calls passthrough — relay `tools`/`tool_choice` in requests and `tool_calls` in responses (ADR-007)
-- [ ] ContentPart translation layer — OpenAI wire format (`message.tool_calls`, `role: "tool"`) ↔ internal content blocks (`ContentPart::ToolUse/ToolResult`)
-- [ ] SSE progress events — L0 heartbeat (axum `KeepAlive`) + L1 `hamoru` extension field for Collaboration progress (ADR-007)
-- [ ] API key authentication
-- [ ] Rate limiting (token bucket, scope: per_key | global)
-- [ ] Cost guardrails
-- [ ] `hamoru serve` CLI command
-- [ ] Connection test from existing OpenAI SDK
+- [x] `POST /v1/chat/completions` (normal + SSE streaming with tool_calls passthrough) — Phase 5a
+- [x] `GET /v1/models` (expose policies as models; workflows/agents deferred to Phase 6) — Phase 5a
+- [x] model field namespace resolution — Phase 5a
+- [x] Tool calls passthrough — relay `tools`/`tool_choice` in requests and `tool_calls` in responses (ADR-007) — Phase 5a
+- [x] ContentPart translation layer — OpenAI wire format (`message.tool_calls`, `role: "tool"`) ↔ internal content blocks (`ContentPart::ToolUse/ToolResult`) — Phase 5a
+- [x] SSE progress events — L0 heartbeat (axum `KeepAlive`); L1 `hamoru` extension field deferred to Phase 6 (ADR-007) — Phase 5a
+- [x] API key authentication — Phase 5b (ADR-011)
+- [x] Rate limiting (token bucket, scope: per_key | global) — Phase 5b (ADR-011)
+- [ ] Cost guardrails — infrastructure ready (Phase 5b), handler integration pending (#62)
+- [x] `hamoru serve` CLI command — Phase 5a
+- [ ] Connection test from existing OpenAI SDK — E2E test pending (#65)
 
 **`GET /v1/models` ID format** — colon-delimited:
 - `hamoru:cost-optimized` (policy)

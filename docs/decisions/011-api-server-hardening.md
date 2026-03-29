@@ -1,4 +1,4 @@
-# ADR-010: API Server Hardening (Phase 5b)
+# ADR-011: API Server Hardening (Phase 5b)
 
 ## Status
 

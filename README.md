@@ -144,6 +144,7 @@ cargo run --bin hamoru -- run -w workflow.yaml "Implement an auth API"
 
 | Variable | Provider | Status |
 |----------|----------|--------|
+| `HAMORU_API_KEYS` | hamoru serve (API auth) | ✅ |
 | `HAMORU_ANTHROPIC_API_KEY` | Anthropic | ✅ |
 | `HAMORU_DEEPSEEK_API_KEY` | DeepSeek | 🔲 Planned (post-v1.0) |
 | `HAMORU_GEMINI_API_KEY` | Google Gemini | 🔲 Planned (post-v1.0) |
@@ -168,7 +169,7 @@ cargo run --bin hamoru -- run -w workflow.yaml "Implement an auth API"
 | `hamoru telemetry pull` | Sync telemetry from remote storage | 🔲 Planned (remote config) |
 | `hamoru telemetry push` | Sync telemetry to remote storage | 🔲 Planned (remote config) |
 | `hamoru status` | Show current configuration overview | 🔲 Planned |
-| `hamoru serve` | Start OpenAI-compatible API server | 🔲 Planned (Phase 5) |
+| `hamoru serve` | Start OpenAI-compatible API server | ✅ |
 | `hamoru agents list` | List agent definitions | 🔲 Planned (Phase 6) |
 | `hamoru agents test <name>` | Dry-run a collaboration pattern | 🔲 Planned (Phase 6) |
 
@@ -232,7 +233,7 @@ hamoru/
 │   │       ├── policy/       # Layer 3: Policy engine
 │   │       ├── orchestrator/ # Layer 4: Workflow execution
 │   │       ├── agents/       # Layer 5: Agent collaboration (planned)
-│   │       ├── server/       # API layer (planned)
+│   │       ├── server/       # API layer: OpenAI wire types, namespace, translation
 │   │       └── error.rs      # Unified error types
 │   └── hamoru-cli/           # CLI entry point
 ├── docs/
