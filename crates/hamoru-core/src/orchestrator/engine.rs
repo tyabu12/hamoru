@@ -265,13 +265,25 @@ impl DefaultOrchestrationEngine {
 
             let wave_start = Instant::now();
 
-            // Execute all steps in the wave
+            // Apply context policy per step and execute all steps in the wave
+            let step_histories: Vec<Vec<Message>> = wave
+                .iter()
+                .map(|&step_idx| {
+                    let step = &workflow.steps[step_idx];
+                    if history_snapshot.is_empty() {
+                        history_snapshot.clone()
+                    } else {
+                        apply_context_policy(&history_snapshot, &step.context_policy)
+                    }
+                })
+                .collect();
+
             let futures: Vec<_> = wave
                 .iter()
                 .zip(previous_outputs.iter())
-                .map(|(&step_idx, prev_output)| {
+                .zip(step_histories.iter())
+                .map(|((&step_idx, prev_output), history)| {
                     let step = &workflow.steps[step_idx];
-                    let history = &history_snapshot;
                     execute_step(
                         step,
                         task,
@@ -395,10 +407,7 @@ impl DefaultOrchestrationEngine {
         }
 
         // All waves complete: determine final output
-        let final_output = if dag.waves.is_empty() {
-            String::new()
-        } else {
-            let last_wave = dag.waves.last().unwrap();
+        let final_output = if let Some(last_wave) = dag.waves.last() {
             if last_wave.len() == 1 {
                 step_outputs[last_wave[0]].clone().unwrap_or_default()
             } else {
@@ -413,6 +422,8 @@ impl DefaultOrchestrationEngine {
                     .collect();
                 super::dag::merge_previous_outputs(&results)
             }
+        } else {
+            String::new()
         };
 
         Ok(ExecutionResult {
@@ -1616,5 +1627,78 @@ mod tests {
         assert_eq!(result.steps_executed[0].step_name, "generate");
         assert_eq!(result.steps_executed[1].step_name, "review");
         assert_eq!(result.terminated_reason, TerminationReason::Completed);
+    }
+
+    #[tokio::test]
+    async fn parallel_transition_disagreement_error() {
+        let provider = build_test_provider();
+        // Wave 1: generate
+        provider.queue_chat_response(Ok(simple_response("gen")));
+        // Wave 2: review says "approved" → COMPLETE, security says "improve" → generate
+        provider.queue_chat_response(Ok(response_with_status_line("ok", "approved")));
+        provider.queue_chat_response(Ok(response_with_status_line("bad", "improve")));
+        let registry = build_registry(provider);
+        let policy = DefaultPolicyEngine::new(test_policy_config());
+        let telemetry = InMemoryTelemetryStore::new();
+
+        // Parallel workflow where review and security have DIFFERENT transition targets
+        let workflow = Workflow {
+            name: "disagree".to_string(),
+            description: None,
+            max_iterations: 10,
+            max_cost: None,
+            default_condition_mode: ConditionMode::StatusLine,
+            steps: vec![
+                WorkflowStep {
+                    name: "generate".to_string(),
+                    tags: vec![],
+                    instruction: "{task}".to_string(),
+                    transitions: vec![],
+                    context_policy: ContextPolicy::KeepAll,
+                    condition_mode: ConditionMode::StatusLine,
+                    dependencies: Some(vec![]),
+                },
+                WorkflowStep {
+                    name: "review".to_string(),
+                    tags: vec![],
+                    instruction: "Review: {previous_output}".to_string(),
+                    transitions: vec![Transition {
+                        condition: "approved".to_string(),
+                        next: TransitionTarget::Complete,
+                    }],
+                    context_policy: ContextPolicy::KeepAll,
+                    condition_mode: ConditionMode::StatusLine,
+                    dependencies: Some(vec!["generate".to_string()]),
+                },
+                WorkflowStep {
+                    name: "security".to_string(),
+                    tags: vec![],
+                    instruction: "Audit: {previous_output}".to_string(),
+                    transitions: vec![Transition {
+                        condition: "improve".to_string(),
+                        next: TransitionTarget::Step("generate".to_string()),
+                    }],
+                    context_policy: ContextPolicy::KeepAll,
+                    condition_mode: ConditionMode::StatusLine,
+                    dependencies: Some(vec!["generate".to_string()]),
+                },
+            ],
+        };
+
+        let engine = DefaultOrchestrationEngine;
+        let err = engine
+            .execute(&workflow, "task", &policy, &registry, &telemetry)
+            .await
+            .unwrap_err();
+
+        match err {
+            HamoruError::ConditionEvaluationFailed { reason, .. } => {
+                assert!(
+                    reason.contains("different targets"),
+                    "Error should mention different targets: {reason}"
+                );
+            }
+            other => panic!("Expected ConditionEvaluationFailed, got: {other:?}"),
+        }
     }
 }
