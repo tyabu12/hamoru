@@ -123,8 +123,9 @@ Prefix the subject line with a single emoji that captures the spirit of the chan
 | 005 | Policy Engine Design — sync trait, quality tier heuristic, scoring algorithm | design-plan.md Phase 3 |
 | 006 | Orchestration Engine Design — module structure, condition evaluation, warn-not-error | design-plan.md Phase 4a |
 | 007 | Agent Framework Integration Design — content block types, tool_call buffering, SSE progress | Cross-cutting (Phase 5 + type design) |
+| 008 | API Server Crate Placement — axum in hamoru-cli vs dedicated crate | design-plan.md Phase 5 |
 
-Next available number: **008**. Increment sequentially from here.
+Next available number: **009**. Increment sequentially from here.
 
 ## Agent Configuration
 
