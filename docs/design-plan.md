@@ -1581,6 +1581,7 @@ On error, clearly communicate "what happened" and "what the user should do."
 - Observability: OTLP export via `tracing-opentelemetry` (Phase 2, feature flag `telemetry-otlp` in hamoru-cli) → self-hosted dashboard (Phase 5+, reads SQLite read-only)
 - IDE Integration: JSON Schema generation for YAML config files (`schemars` crate — note: `ModelEntry`'s `#[serde(untagged)]` has known compatibility issues with schemars)
 - Config validation CLI: `hamoru validate` (YAML schema check + provider reachability verification)
+- Cost comparison benchmark CLI (`hamoru bench`) — productize developer benchmark scripts if user demand warrants (see launch-plan.md Cost Comparison Benchmark)
 
 **Related documents**: [Launch & Growth Plan](launch-plan.md)
 

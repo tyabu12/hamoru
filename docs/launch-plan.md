@@ -23,6 +23,8 @@ Every action below is **blocked** until its corresponding Phase deliverables are
 | Phase 4a | English article | Architecture overview + competitive analysis for international audience (dev.to; platform finalized at Phase 4a) | Phase 4a deliverables complete, CI green |
 | Phase 4a | Show HN | "Show HN: hamoru — declarative LLM orchestration with policy-based model selection" | Phase 4a deliverables complete, CI green |
 | Phase 4a | crates.io alpha | Publish `0.1.0-alpha` to reserve crate name and enable `cargo install` | Phase 4a deliverables complete, CI green |
+| Phase 4a+ | Cost comparison benchmark | Run benchmark suite, commit results to `benchmarks/results/`, add cost comparison table to README (see section below) | Phase 4a deliverables complete, Ollama + Claude both available |
+| Phase 4a+ | Zenn article #4.5 | "ローカル LLM とクラウド API の使い分け — 実データで検証するコスト最適化戦略" — Benchmark methodology, LLM-as-Judge, real cost data | Benchmark results committed |
 | Phase 5 | Zenn article #5 | "OpenAI 互換 API の裏側で複数 LLM を協調させる" | Phase 5 deliverables complete, CI green |
 | Phase 5 | crates.io stable | Publish `0.1.0` stable release | Phase 5 deliverables complete, CI green |
 | Phase 5 | Cost Savings Calculator | Frontend-only widget on landing page (see section below) | Phase 5 deliverables complete, CI green |
@@ -70,6 +72,90 @@ Must show these three steps in sequence:
 4. Quick start (link to README)
 5. Link to Zenn article series for deep dives
 
+## Cost Comparison Benchmark
+
+**When**: After Phase 4a completion. Can run in parallel with Phase 4b development.
+
+**Goal**: Produce reproducible data showing that hamoru's policy-based routing (local-first + cloud-when-needed) is cost-effective compared to all-cloud API usage, for specific workload categories.
+
+**Non-goal**: This is NOT a general-purpose LLM benchmark. It verifies hamoru's cost/quality tradeoff claim for marketing purposes.
+
+### Benchmark Design
+
+**Task categories** (MVP: these 3):
+
+| Category | Count | Quality metric | Expected outcome |
+|----------|-------|---------------|-----------------|
+| Sentiment classification | 50 texts | Exact match (objective) | Local models competitive |
+| Technical summarization | 20 paragraphs | LLM-as-Judge 1-5 score | Local adequate for most |
+| Small function generation | 10 specs | Compilation + LLM-as-Judge | Cloud better for complex |
+
+**Strategies compared:**
+
+| Strategy | Description | Routing |
+|----------|-------------|---------|
+| `all-cloud` | All requests to Claude Sonnet | `hamoru run -m claude:claude-sonnet-4-6` |
+| `hamoru-policy` | Policy routing: simple → local, complex → cloud | `hamoru run -p cost-optimized` |
+| `all-local` | All requests to Ollama (cost = $0) | `hamoru run -m local:llama3.3:70b` |
+
+**Quality evaluation (dual approach):**
+- **Objective metrics**: Classification accuracy (exact match), code compilation pass/fail
+- **LLM-as-Judge**: Claude Sonnet scores non-objective tasks (summarization, code quality) on a 1-5 rubric via tool calling. Judge cost is tracked separately and excluded from strategy cost comparison
+
+**Subscription plan reference comparison:**
+
+Include subscription plans as a reference line in the results. Calculate "effective cost per task" by amortizing monthly subscription cost over estimated usage volume.
+
+| Plan | Monthly cost | Est. monthly tasks* | Effective cost/task |
+|------|-------------|---------------------|-------------------|
+| Claude Pro | $20 | ~1,500 | ~$0.013 |
+| ChatGPT Plus | $20 | ~1,500 | ~$0.013 |
+| Claude Max (5x) | $100 | ~7,500 | ~$0.013 |
+
+\*Estimated from published rate limits; actual varies by model tier and usage pattern.
+
+**Important caveats** (must appear alongside any comparison):
+- Subscription plans include UI, ecosystem features (Claude Code, Canvas, etc.), and convenience — not just model access
+- Subscription rate limits constrain throughput; hamoru has no such limit (bounded only by API rate limits + wallet)
+- The comparison answers "for THIS batch workload, which is cheaper?" — not "which is better overall?"
+- Present as "reference" not "winner/loser" — different users have different needs
+- Local model costs ($0) reflect API billing only — hardware and electricity costs for running Ollama are not included
+
+### Execution
+
+- **Method**: Shell scripts in `scripts/benchmark/` that invoke `hamoru run` for each task × strategy combination
+- **Data**: Task inputs in `benchmarks/data/`, results in `benchmarks/results/`
+- **Cost tracking**: hamoru's existing telemetry records cost per request automatically
+- **Reproducibility**: Scripts and data committed to repo. Anyone with API keys + Ollama can re-run
+
+### Result Format
+
+JSON output per benchmark run:
+
+```json
+{
+  "benchmark": "cost-comparison-v1",
+  "timestamp": "...",
+  "task_count": 80,
+  "strategies": {
+    "all-cloud": { "total_cost": 1.23, "avg_quality": 4.2, "avg_latency_ms": 1850 },
+    "hamoru-policy": { "total_cost": 0.31, "avg_quality": 3.9, "avg_latency_ms": 1200 },
+    "all-local": { "total_cost": 0.00, "avg_quality": 3.1, "avg_latency_ms": 800 }
+  },
+  "subscription_reference": {
+    "claude_pro": { "monthly_cost": 20, "effective_cost_for_benchmark": 1.07, "note": "Estimated from ~1500 tasks/mo" },
+    "chatgpt_plus": { "monthly_cost": 20, "effective_cost_for_benchmark": 1.07, "note": "Estimated from ~1500 tasks/mo" }
+  }
+}
+```
+
+### How Results Feed into Marketing
+
+- **README**: Summary cost comparison table with link to full data
+- **Zenn article #4.5**: Methodology deep dive (see milestone table above)
+- **Landing page**: Cost Savings Calculator uses benchmark JSON as data source
+- **Show HN**: Link to reproducible benchmark for "prove it" comments
+
 ## Cost Savings Calculator (Frontend Widget)
 
 **When**: Phase 5+ (deferred — requires Policy Engine real data from Phase 3+ to make credible estimates).
@@ -87,7 +173,7 @@ Must show these three steps in sequence:
 - Savings amount and percentage
 - Which models hamoru would select for each task category
 
-**Data source**: Hardcoded model pricing (same source as `ModelInfo` defaults in hamoru-core).
+**Data source**: Benchmark result JSON from Cost Comparison Benchmark (when available), with hardcoded model pricing as fallback (same source as `ModelInfo` defaults in hamoru-core).
 
 ## Distribution Channels
 
@@ -113,6 +199,8 @@ Note: [awesome-self-hosted](https://github.com/awesome-selfhosted/awesome-selfho
 - Be ready to respond to comments for 24h
 - "Why not just use LiteLLM?" — have a clear, non-defensive answer ready
 - Acknowledge what hamoru does NOT do (not a replacement for TensorZero's statistical optimization)
+- "How do you measure quality?" — Link to benchmark methodology and raw data in repo
+- "Those numbers assume a specific task mix" — Acknowledge openly, invite users to run benchmarks on their own workload
 
 ### Zenn (Ongoing)
 
