@@ -28,9 +28,9 @@ See [design-plan.md](docs/design-plan.md) for the full roadmap.
 
 ## ✨ Key Differentiators
 
-1. **Declarative Agent Collaboration** — Define LLM collaboration patterns (Generator/Evaluator, Pipeline, Debate) in YAML
-2. **Policy as Code** — Intent-based model selection: `tags: [review] → quality-first policy → Opus auto-selected`
-3. **Cost Impact Prediction** — `hamoru plan` simulates cost changes before applying policy updates
+1. 🎼 **Declarative Agent Collaboration** — Define LLM collaboration patterns (Generator/Evaluator, Pipeline, Debate) in YAML
+2. ⚖️ **Policy as Code** — Intent-based model selection: `tags: [review] → quality-first policy → Opus auto-selected`
+3. 🔮 **Cost Impact Prediction** — `hamoru plan` simulates cost changes before applying policy updates
 
 ## 🔌 Supported Providers
 
