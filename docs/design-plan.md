@@ -308,17 +308,20 @@ enum Capability {
     PromptCaching,   // Prompt Caching support
 }
 
-// Message follows OpenAI's content_parts model,
-// designed to handle multimodal (images, audio, etc.) from the start.
+// Message follows the content block model (ADR-007).
+// Implementation uses MessageContent enum: Text(String) for the 95%+ plain-text case
+// (avoids Vec allocation), Parts(Vec<ContentPart>) for multimodal/tool content.
 struct Message {
     role: Role,                  // System, User, Assistant, Tool
-    content: Vec<ContentPart>,   // Can store non-text content
+    content: MessageContent,     // Text(String) | Parts(Vec<ContentPart>)
 }
 
 enum ContentPart {
-    Text(String),
+    Text { text: String },
     ImageUrl { url: String },
     ImageBase64 { media_type: String, data: String },
+    ToolUse { id: String, name: String, input: serde_json::Value },  // ADR-007
+    ToolResult { tool_use_id: String, content: String },             // ADR-007
     // Audio etc. added in the future
 }
 
@@ -328,17 +331,30 @@ struct ChatRequest {
     temperature: Option<f64>,
     max_tokens: Option<u64>,
     tools: Option<Vec<Tool>>,
+    tool_choice: Option<ToolChoice>,       // Auto, Required, Tool { name }
     stream: bool,
 }
 
 struct ChatResponse {
-    content: String,
+    content: String,                       // Flat string, NOT content blocks (ADR-007)
     model: String,
     usage: TokenUsage,
     latency_ms: u64,
     finish_reason: FinishReason,
     tool_calls: Option<Vec<ToolCall>>,
 }
+// ChatResponse intentionally retains separate content/tool_calls fields (not content blocks).
+// It is a single-call result consumed by orchestrator/condition evaluator, not conversation history.
+// Message (with ContentPart) represents conversation history across turns. See ADR-007.
+
+struct ChatChunk {
+    delta: String,
+    finish_reason: Option<FinishReason>,
+    usage: Option<TokenUsage>,
+    tool_calls: Option<Vec<ToolCall>>,     // Complete tool_calls, buffered (ADR-007)
+}
+// Provider adapters buffer tool_call chunks internally via shared ToolCallAccumulator.
+// Text deltas stream immediately; tool_calls attach to the final chunk only.
 
 struct TokenUsage {
     input_tokens: u64,
@@ -551,14 +567,17 @@ steps:
 
 **Streaming policy**: Intermediate workflow steps are buffered; only the final step streams output. An extension point for `step_index` field in API responses is preserved.
 
-**TTFB (Time to First Byte) mitigation**: Workflows and agent collaborations may take tens of seconds before final output. When served as an OpenAI-compatible API, this risks client-side timeouts. Mitigation: inject progress events into the SSE stream:
+**TTFB (Time to First Byte) mitigation** (ADR-007, Staged SSE Progress Events): Workflows and agent collaborations may take tens of seconds before final output. When served as an OpenAI-compatible API, this risks client-side timeouts. Two-layer mitigation:
+
+- **L0: SSE Comment Heartbeat** — axum `sse::KeepAlive` emits `: \n\n` comment lines at a configurable interval, keeping connections alive through proxies.
+- **L1: Progress metadata** — Inject progress events with empty `choices` and a `hamoru` extension field:
 
 ```
-data: {"object":"chat.completion.chunk","choices":[],"hamoru":{"type":"progress","step":"review","iteration":2,"cost_so_far":0.023}}
-
+data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1234567890,"model":"hamoru:agents:code-review","choices":[],"hamoru":{"type":"step_start","step":"reviewer","iteration":2,"model":"claude:claude-sonnet-4-6"}}
+data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1234567890,"model":"hamoru:agents:code-review","choices":[],"hamoru":{"type":"step_complete","step":"reviewer","iteration":2,"cost_so_far":0.031,"tokens_so_far":2847}}
 ```
 
-SSE events with empty `choices` are ignored by OpenAI SDKs, preserving compatibility. hamoru-aware clients can display progress from the `hamoru` field. The validity of this design will be verified against actual SDK behavior in Phase 5 (API Server) and recorded in an ADR.
+Empty `choices` are ignored by OpenAI SDKs (verified: OpenAI itself emits `choices: []` for usage-only final chunks). hamoru-aware clients parse the `hamoru` field for progress display and cost monitoring. L2 (step output) and L3 (typed SSE events) are planned for post-v1.0. See ADR-007 for full design rationale.
 
 **Condition evaluation**:
 - **v1: STATUS line parsing** — Extracts and normalizes `STATUS: approved` etc. from output tail. Simple to implement but fragile against LLM output variation. Kept as fallback
@@ -1263,6 +1282,7 @@ hamoru run --tags review,security "Check for vulnerabilities"
 - [x] Policy Engine-based auto model selection per step
 - [x] Workflow execution report generation
 - [x] `hamoru run -w <workflow>` implementation
+- [x] ADR-007: Agent Framework Integration — Defines tool_calls passthrough mechanism (ContentPart::ToolUse/ToolResult), streaming tool_call buffering (ChatChunk.tool_calls), and SSE progress events for Collaboration. Cross-cutting: accepted during Phase 4a, affects Phase 5+ type design. Extends ADR-002
 
 **Completion criteria:**
 ```bash
@@ -1310,9 +1330,12 @@ hamoru run -w parallel-review "Review this code"
 **Goal**: OpenAI-compatible API server
 
 **Deliverables:**
-- [ ] `POST /v1/chat/completions` (normal + SSE streaming)
+- [ ] `POST /v1/chat/completions` (normal + SSE streaming with tool_calls passthrough)
 - [ ] `GET /v1/models` (expose policies/workflows/agent collaborations as models)
 - [ ] model field namespace resolution
+- [ ] Tool calls passthrough — relay `tools`/`tool_choice` in requests and `tool_calls` in responses (ADR-007)
+- [ ] ContentPart translation layer — OpenAI wire format (`message.tool_calls`, `role: "tool"`) ↔ internal content blocks (`ContentPart::ToolUse/ToolResult`)
+- [ ] SSE progress events — L0 heartbeat (axum `KeepAlive`) + L1 `hamoru` extension field for Collaboration progress (ADR-007)
 - [ ] API key authentication
 - [ ] Rate limiting (token bucket, scope: per_key | global)
 - [ ] Cost guardrails
@@ -1337,7 +1360,7 @@ response = client.chat.completions.create(
 # → All results returned in OpenAI format
 ```
 
-**Learning points**: Understanding OpenAI API spec, SSE implementation with axum, API gateway design.
+**Learning points**: Understanding OpenAI API spec (including tool_calls wire format), SSE implementation with axum, API gateway design, tool_call buffering strategy, content block translation between provider formats and wire formats.
 
 ### Phase 6: Agent Collaboration Engine (Layer 5 — Core Differentiator)
 
@@ -1576,7 +1599,7 @@ On error, clearly communicate "what happened" and "what the user should do."
 - Multi-tenant support (team use)
 - ML-based cost prediction/optimization improvements
 - OS keychain integration (macOS Keychain / Linux Secret Service)
-- Streaming output for workflow intermediate steps
+- Streaming output for workflow intermediate steps — L1 progress metadata (ADR-007) in Phase 5; L2 step output + L3 typed SSE events post-v1.0
 - TensorZero-compatible feedback API (complementing statistical optimization)
 - Observability: OTLP export via `tracing-opentelemetry` (Phase 2, feature flag `telemetry-otlp` in hamoru-cli) → self-hosted dashboard (Phase 5+, reads SQLite read-only)
 - IDE Integration: JSON Schema generation for YAML config files (`schemars` crate — note: `ModelEntry`'s `#[serde(untagged)]` has known compatibility issues with schemars)
