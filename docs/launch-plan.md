@@ -78,7 +78,7 @@ Must show these three steps in sequence:
 
 **Goal**: Produce reproducible data showing that hamoru's policy-based routing (local-first + cloud-when-needed) is cost-effective compared to all-cloud API usage, for specific workload categories.
 
-**Non-goal**: This is NOT a general-purpose LLM benchmark. It verifies hamoru's cost/quality tradeoff claim for marketing purposes.
+**Non-goal**: This is NOT a general-purpose single-model LLM benchmark (LMSYS, OpenLLM Leaderboard already cover that). It verifies hamoru's cost/quality tradeoff and orchestration strategy claims for marketing purposes.
 
 ### Benchmark Design
 
@@ -121,12 +121,54 @@ Include subscription plans as a reference line in the results. Calculate "effect
 - Present as "reference" not "winner/loser" — different users have different needs
 - Local model costs ($0) reflect API billing only — hardware and electricity costs for running Ollama are not included
 
+### Orchestration Strategy Benchmark
+
+The single-step cost comparison above answers "which model is cheapest?" The orchestration strategy benchmark answers a harder, more interesting question: **"which model *combination* across workflow steps is optimal?"** This is uniquely hamoru's territory — no existing benchmark covers it.
+
+**Workflow under test**: `generate-and-review` (2-step: code generation → code review)
+
+**Model combination strategies:**
+
+| Strategy | Generate step | Review step | Routing |
+|----------|--------------|-------------|---------|
+| `cloud-cloud` | Claude Sonnet | Claude Sonnet | `hamoru run -w generate-and-review` (all-cloud policy) |
+| `local-cloud` | Ollama 14B | Claude Sonnet | `hamoru run -w generate-and-review` (cost-optimized policy) |
+| `local-local` | Ollama 14B | Ollama 14B | `hamoru run -w generate-and-review` (all-local policy) |
+| `cloud-local` | Claude Sonnet | Ollama 14B | `hamoru run -w generate-and-review` (custom policy) |
+
+*Note: The orchestration benchmark uses a 14B-class local model (`qwen2.5-coder:14b`) rather than the 70B model from the single-step benchmark, since the cost-optimized workflow offloads quality-critical work to the cloud review step. This also lowers the hardware bar for reproducibility (16GB RAM vs. 40GB+).*
+
+**What this demonstrates:**
+- The `local-cloud` strategy (cheap draft → expensive review) is expected to achieve near-cloud quality at a fraction of the cost — this is hamoru's core value proposition
+- The `cloud-local` strategy (expensive draft → cheap review) is expected to perform worse, showing that model placement *within the workflow* matters
+- Policy Engine's ability to automatically assign the right model to the right step is validated by data
+
+**Task inputs**: Same code generation specs from the single-step benchmark (10 function specs), but executed as 2-step workflows instead of single requests. This enables direct comparison between single-step and workflow results.
+
+**Quality evaluation**: LLM-as-Judge scores the *final workflow output* (post-review), not intermediate steps. This measures end-to-end quality of the orchestration strategy.
+
+**Expected result example:**
+
+```
+┌────────────────┬──────────┬─────────┬─────────────────────────────────┐
+│ Strategy       │ Cost     │ Quality │ Insight                         │
+├────────────────┼──────────┼─────────┼─────────────────────────────────┤
+│ cloud-cloud    │ $0.08    │ 4.2/5   │ Baseline: best quality          │
+│ local-cloud    │ $0.04    │ 4.0/5   │ 95% quality at 50% cost         │
+│ cloud-local    │ $0.04    │ 3.5/5   │ Review step quality matters     │
+│ local-local    │ $0.00    │ 2.8/5   │ Cost = $0 but quality drops     │
+└────────────────┴──────────┴─────────┴─────────────────────────────────┘
+Key finding: "cheap draft + expensive review" outperforms "expensive draft + cheap review"
+at the same cost — model placement matters more than model budget.
+```
+
 ### Execution
 
 - **Method**: Shell scripts in `scripts/benchmark/` that invoke `hamoru run` for each task × strategy combination
 - **Data**: Task inputs in `benchmarks/data/`, results in `benchmarks/results/`
 - **Cost tracking**: hamoru's existing telemetry records cost per request automatically
 - **Reproducibility**: Scripts and data committed to repo. Anyone with API keys + Ollama can re-run
+- **Hardware requirements**: Cloud API strategies run on any machine (HTTP requests only). Local model strategies require Ollama with a 14B-class model (e.g., `qwen2.5-coder:14b`) — runs comfortably on Apple Silicon with 16GB+ RAM. 70B models are optional and require cloud GPU or 40GB+ RAM
 
 ### Result Format
 
@@ -142,6 +184,16 @@ JSON output per benchmark run:
     "hamoru-policy": { "total_cost": 0.31, "avg_quality": 3.9, "avg_latency_ms": 1200 },
     "all-local": { "total_cost": 0.00, "avg_quality": 3.1, "avg_latency_ms": 800 }
   },
+  "orchestration_strategies": {
+    "workflow": "generate-and-review",
+    "task_count": 10,
+    "combinations": {
+      "cloud-cloud": { "total_cost": 0.80, "avg_quality": 4.2, "avg_latency_ms": 4200, "generate_model": "claude-sonnet-4-6", "review_model": "claude-sonnet-4-6" },
+      "local-cloud": { "total_cost": 0.40, "avg_quality": 4.0, "avg_latency_ms": 3500, "generate_model": "qwen2.5-coder:14b", "review_model": "claude-sonnet-4-6" },
+      "cloud-local": { "total_cost": 0.40, "avg_quality": 3.5, "avg_latency_ms": 3500, "generate_model": "claude-sonnet-4-6", "review_model": "qwen2.5-coder:14b" },
+      "local-local": { "total_cost": 0.00, "avg_quality": 2.8, "avg_latency_ms": 2800, "generate_model": "qwen2.5-coder:14b", "review_model": "qwen2.5-coder:14b" }
+    }
+  },
   "subscription_reference": {
     "claude_pro": { "monthly_cost": 20, "effective_cost_for_benchmark": 1.07, "note": "Estimated from ~1500 tasks/mo" },
     "chatgpt_plus": { "monthly_cost": 20, "effective_cost_for_benchmark": 1.07, "note": "Estimated from ~1500 tasks/mo" }
@@ -155,6 +207,7 @@ JSON output per benchmark run:
 - **Zenn article #4.5**: Methodology deep dive (see milestone table above)
 - **Landing page**: Cost Savings Calculator uses benchmark JSON as data source
 - **Show HN**: Link to reproducible benchmark for "prove it" comments
+- **Competitive positioning**: Orchestration strategy results demonstrate a capability no other tool benchmarks — model *placement* optimization across workflow steps
 
 ## Cost Savings Calculator (Frontend Widget)
 
