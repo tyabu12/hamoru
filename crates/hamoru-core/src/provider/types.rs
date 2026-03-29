@@ -3,6 +3,7 @@
 //! These types define the vocabulary for cross-layer communication.
 //! Provider-specific API types must NOT appear here — only the unified abstractions.
 
+use std::fmt;
 use std::ops::AddAssign;
 
 use serde::{Deserialize, Serialize};
@@ -24,7 +25,7 @@ pub enum Role {
 /// A single content part within a message.
 ///
 /// Follows OpenAI's content_parts model for multimodal support.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ContentPart {
     /// Plain text content.
@@ -73,13 +74,41 @@ pub enum ContentPart {
     },
 }
 
+// Custom Debug for ContentPart omits text/data/input/content to prevent prompt content leakage (Hard Rule 8).
+impl fmt::Debug for ContentPart {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ContentPart::Text { .. } => {
+                f.debug_struct("Text").field("text", &"<redacted>").finish()
+            }
+            ContentPart::ImageUrl { url } => f.debug_struct("ImageUrl").field("url", url).finish(),
+            ContentPart::ImageBase64 { media_type, .. } => f
+                .debug_struct("ImageBase64")
+                .field("media_type", media_type)
+                .field("data", &"<redacted>")
+                .finish(),
+            ContentPart::ToolUse { id, name, .. } => f
+                .debug_struct("ToolUse")
+                .field("id", id)
+                .field("name", name)
+                .field("input", &"<redacted>")
+                .finish(),
+            ContentPart::ToolResult { tool_use_id, .. } => f
+                .debug_struct("ToolResult")
+                .field("tool_use_id", tool_use_id)
+                .field("content", &"<redacted>")
+                .finish(),
+        }
+    }
+}
+
 /// Content of a message — optimized for the common text-only case.
 ///
 /// Design doc specifies `Vec<ContentPart>`, but we use an enum to avoid
 /// heap-allocating a `Vec` for the 95%+ case of plain text messages.
 /// `Message` flows through every trait in the system, so this optimization
 /// prevents a breaking change later.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum MessageContent {
     /// Plain text (common case, no Vec allocation).
@@ -88,13 +117,36 @@ pub enum MessageContent {
     Parts(Vec<ContentPart>),
 }
 
+// Custom Debug for MessageContent omits text/parts to prevent prompt content leakage (Hard Rule 8).
+impl fmt::Debug for MessageContent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            MessageContent::Text(_) => f.debug_tuple("Text").field(&"<redacted>").finish(),
+            MessageContent::Parts(parts) => f
+                .debug_tuple("Parts")
+                .field(&format_args!("[{} parts]", parts.len()))
+                .finish(),
+        }
+    }
+}
+
 /// A single message in a conversation.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
     /// Role of the message sender.
     pub role: Role,
     /// Content of the message.
     pub content: MessageContent,
+}
+
+// Custom Debug for Message omits content to prevent prompt content leakage (Hard Rule 8).
+impl fmt::Debug for Message {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Message")
+            .field("role", &self.role)
+            .field("content", &"<redacted>")
+            .finish()
+    }
 }
 
 /// Model capabilities for policy-based routing.
@@ -194,7 +246,7 @@ pub struct Tool {
 }
 
 /// A tool call made by the LLM in its response.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ToolCall {
     /// Unique identifier for this tool call.
     pub id: String,
@@ -202,6 +254,17 @@ pub struct ToolCall {
     pub name: String,
     /// JSON-encoded arguments for the tool.
     pub arguments: String,
+}
+
+// Custom Debug for ToolCall omits arguments to prevent prompt content leakage (Hard Rule 8).
+impl fmt::Debug for ToolCall {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ToolCall")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("arguments", &"<redacted>")
+            .finish()
+    }
 }
 
 /// How the model should choose which tool to call.
@@ -224,7 +287,7 @@ pub enum ToolChoice {
 }
 
 /// A request to an LLM provider.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ChatRequest {
     /// Target model identifier.
     pub model: String,
@@ -243,8 +306,35 @@ pub struct ChatRequest {
     pub stream: bool,
 }
 
+// Custom Debug for ChatRequest omits messages/tools to prevent prompt content leakage (Hard Rule 8).
+impl fmt::Debug for ChatRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ChatRequest")
+            .field("model", &self.model)
+            .field(
+                "messages",
+                &format_args!("[{} messages]", self.messages.len()),
+            )
+            .field("temperature", &self.temperature)
+            .field("max_tokens", &self.max_tokens)
+            .field(
+                "tools",
+                &format_args!(
+                    "{}",
+                    match &self.tools {
+                        Some(t) => format!("[{} tools]", t.len()),
+                        None => "None".to_string(),
+                    }
+                ),
+            )
+            .field("tool_choice", &self.tool_choice)
+            .field("stream", &self.stream)
+            .finish()
+    }
+}
+
 /// A complete response from an LLM provider.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ChatResponse {
     /// Generated text content.
     pub content: String,
@@ -258,6 +348,29 @@ pub struct ChatResponse {
     pub finish_reason: FinishReason,
     /// Tool calls made by the model, if any.
     pub tool_calls: Option<Vec<ToolCall>>,
+}
+
+// Custom Debug for ChatResponse omits content/tool_calls to prevent prompt content leakage (Hard Rule 8).
+impl fmt::Debug for ChatResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ChatResponse")
+            .field("content", &"<redacted>")
+            .field("model", &self.model)
+            .field("usage", &self.usage)
+            .field("latency_ms", &self.latency_ms)
+            .field("finish_reason", &self.finish_reason)
+            .field(
+                "tool_calls",
+                &format_args!(
+                    "{}",
+                    match &self.tool_calls {
+                        Some(tc) => format!("[{} tool_calls]", tc.len()),
+                        None => "None".to_string(),
+                    }
+                ),
+            )
+            .finish()
+    }
 }
 
 /// Reason the model stopped generating tokens.
@@ -274,7 +387,7 @@ pub enum FinishReason {
 }
 
 /// A single chunk in a streaming response.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ChatChunk {
     /// Incremental text content.
     pub delta: String,
@@ -290,13 +403,34 @@ pub struct ChatChunk {
     pub tool_calls: Option<Vec<ToolCall>>,
 }
 
+// Custom Debug for ChatChunk omits delta/tool_calls to prevent prompt content leakage (Hard Rule 8).
+impl fmt::Debug for ChatChunk {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ChatChunk")
+            .field("delta", &"<redacted>")
+            .field("finish_reason", &self.finish_reason)
+            .field("usage", &self.usage)
+            .field(
+                "tool_calls",
+                &format_args!(
+                    "{}",
+                    match &self.tool_calls {
+                        Some(tc) => format!("[{} tool_calls]", tc.len()),
+                        None => "None".to_string(),
+                    }
+                ),
+            )
+            .finish()
+    }
+}
+
 /// Accumulates incremental tool call fragments from streaming responses
 /// into complete `ToolCall` objects (ADR-007).
 ///
 /// Provider adapters use this to buffer partial tool call data (name, argument
 /// fragments) and emit complete tool calls only when the stream signals completion.
 /// This shared utility prevents duplicating buffering logic across providers.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct ToolCallAccumulator {
     /// In-progress tool calls keyed by index (provider stream order).
     pending: std::collections::BTreeMap<u32, PendingToolCall>,
@@ -308,6 +442,15 @@ struct PendingToolCall {
     id: String,
     name: String,
     arguments: String,
+}
+
+// Custom Debug for ToolCallAccumulator omits pending content to prevent prompt content leakage (Hard Rule 8).
+impl fmt::Debug for ToolCallAccumulator {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ToolCallAccumulator")
+            .field("pending", &format_args!("[{} entries]", self.pending.len()))
+            .finish()
+    }
 }
 
 impl ToolCallAccumulator {
@@ -626,6 +769,195 @@ mod tests {
         assert!(!acc.has_pending());
         let calls = acc.finish();
         assert!(calls.is_empty());
+    }
+
+    // --- Debug redaction tests (Hard Rule 8) ---
+
+    #[test]
+    fn content_part_debug_redacts_text() {
+        let part = ContentPart::Text {
+            text: "SECRET PROMPT".to_string(),
+        };
+        let debug = format!("{:?}", part);
+        assert!(!debug.contains("SECRET PROMPT"));
+        assert!(debug.contains("redacted"));
+        assert!(debug.contains("Text"));
+    }
+
+    #[test]
+    fn content_part_debug_redacts_image_data() {
+        let part = ContentPart::ImageBase64 {
+            media_type: "image/png".to_string(),
+            data: "BASE64SECRET".to_string(),
+        };
+        let debug = format!("{:?}", part);
+        assert!(!debug.contains("BASE64SECRET"));
+        assert!(debug.contains("image/png"));
+        assert!(debug.contains("redacted"));
+    }
+
+    #[test]
+    fn content_part_debug_redacts_tool_use_input() {
+        let part = ContentPart::ToolUse {
+            id: "call_1".to_string(),
+            name: "search".to_string(),
+            input: serde_json::json!({"secret": "data"}),
+        };
+        let debug = format!("{:?}", part);
+        assert!(!debug.contains("secret"));
+        assert!(!debug.contains("data"));
+        assert!(debug.contains("call_1"));
+        assert!(debug.contains("search"));
+        assert!(debug.contains("redacted"));
+    }
+
+    #[test]
+    fn content_part_debug_redacts_tool_result_content() {
+        let part = ContentPart::ToolResult {
+            tool_use_id: "call_1".to_string(),
+            content: "SECRET RESULT".to_string(),
+        };
+        let debug = format!("{:?}", part);
+        assert!(!debug.contains("SECRET RESULT"));
+        assert!(debug.contains("call_1"));
+        assert!(debug.contains("redacted"));
+    }
+
+    #[test]
+    fn content_part_debug_shows_image_url() {
+        let part = ContentPart::ImageUrl {
+            url: "https://example.com/img.png".to_string(),
+        };
+        let debug = format!("{:?}", part);
+        assert!(debug.contains("https://example.com/img.png"));
+    }
+
+    #[test]
+    fn message_content_debug_redacts_text() {
+        let mc = MessageContent::Text("SECRET TEXT".to_string());
+        let debug = format!("{:?}", mc);
+        assert!(!debug.contains("SECRET TEXT"));
+        assert!(debug.contains("redacted"));
+    }
+
+    #[test]
+    fn message_content_debug_shows_parts_count() {
+        let mc = MessageContent::Parts(vec![
+            ContentPart::Text {
+                text: "SECRET".to_string(),
+            },
+            ContentPart::Text {
+                text: "MORE SECRET".to_string(),
+            },
+        ]);
+        let debug = format!("{:?}", mc);
+        assert!(!debug.contains("SECRET"));
+        assert!(debug.contains("2 parts"));
+    }
+
+    #[test]
+    fn message_debug_redacts_content() {
+        let msg = Message {
+            role: Role::User,
+            content: MessageContent::Text("SECRET MESSAGE".to_string()),
+        };
+        let debug = format!("{:?}", msg);
+        assert!(!debug.contains("SECRET MESSAGE"));
+        assert!(debug.contains("redacted"));
+        assert!(debug.contains("User"));
+    }
+
+    #[test]
+    fn tool_call_debug_redacts_arguments() {
+        let tc = ToolCall {
+            id: "call_1".to_string(),
+            name: "get_weather".to_string(),
+            arguments: r#"{"location":"secret place"}"#.to_string(),
+        };
+        let debug = format!("{:?}", tc);
+        assert!(!debug.contains("secret place"));
+        assert!(debug.contains("call_1"));
+        assert!(debug.contains("get_weather"));
+        assert!(debug.contains("redacted"));
+    }
+
+    #[test]
+    fn chat_request_debug_redacts_messages_and_tools() {
+        let req = ChatRequest {
+            model: "test-model".to_string(),
+            messages: vec![
+                Message {
+                    role: Role::User,
+                    content: MessageContent::Text("SECRET PROMPT".to_string()),
+                },
+                Message {
+                    role: Role::Assistant,
+                    content: MessageContent::Text("SECRET RESPONSE".to_string()),
+                },
+            ],
+            temperature: Some(0.7),
+            max_tokens: Some(1024),
+            tools: Some(vec![Tool {
+                name: "search".to_string(),
+                description: "Search things".to_string(),
+                parameters: serde_json::json!({}),
+            }]),
+            tool_choice: None,
+            stream: false,
+        };
+        let debug = format!("{:?}", req);
+        assert!(!debug.contains("SECRET PROMPT"));
+        assert!(!debug.contains("SECRET RESPONSE"));
+        assert!(debug.contains("2 messages"));
+        assert!(debug.contains("1 tools"));
+        assert!(debug.contains("test-model"));
+    }
+
+    #[test]
+    fn chat_response_debug_redacts_content() {
+        let resp = ChatResponse {
+            content: "SECRET LLM OUTPUT".to_string(),
+            model: "test-model".to_string(),
+            usage: TokenUsage::default(),
+            latency_ms: 150,
+            finish_reason: FinishReason::Stop,
+            tool_calls: Some(vec![ToolCall {
+                id: "call_1".to_string(),
+                name: "search".to_string(),
+                arguments: r#"{"q":"secret"}"#.to_string(),
+            }]),
+        };
+        let debug = format!("{:?}", resp);
+        assert!(!debug.contains("SECRET LLM OUTPUT"));
+        assert!(!debug.contains("secret"));
+        assert!(debug.contains("redacted"));
+        assert!(debug.contains("test-model"));
+        assert!(debug.contains("1 tool_calls"));
+    }
+
+    #[test]
+    fn chat_chunk_debug_redacts_delta() {
+        let chunk = ChatChunk {
+            delta: "SECRET CHUNK".to_string(),
+            finish_reason: Some(FinishReason::Stop),
+            usage: None,
+            tool_calls: None,
+        };
+        let debug = format!("{:?}", chunk);
+        assert!(!debug.contains("SECRET CHUNK"));
+        assert!(debug.contains("redacted"));
+        assert!(debug.contains("Stop"));
+    }
+
+    #[test]
+    fn tool_call_accumulator_debug_redacts_pending() {
+        let mut acc = ToolCallAccumulator::new();
+        acc.feed(0, Some("call_1"), Some("search"), r#"{"q":"secret"}"#);
+        acc.feed(1, Some("call_2"), Some("fetch"), r#"{"url":"private"}"#);
+        let debug = format!("{:?}", acc);
+        assert!(!debug.contains("secret"));
+        assert!(!debug.contains("private"));
+        assert!(debug.contains("2 entries"));
     }
 
     #[test]
