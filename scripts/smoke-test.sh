@@ -349,6 +349,9 @@ fi
 # ---------------------------------------------------------------------------
 
 echo ""
+# CI-CONTRACT: The CI workflow (.github/workflows/ci.yml) parses this exact format.
+# Changing the format will break PR comment reporting.
+# Pattern: "# <N> passed, <N> failed, <N> skipped (total: <N>)"
 echo "# $PASSED passed, $FAILED failed, $SKIPPED skipped (total: $TOTAL)"
 
 if [[ "$FAILED" -gt 0 ]]; then
