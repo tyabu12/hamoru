@@ -87,7 +87,7 @@ See [design-plan.md](docs/design-plan.md) for the full roadmap.
 
 ```bash
 cargo build
-cargo run -p hamoru-cli -- init
+cargo run --bin hamoru -- init
 ```
 
 ### 🏠 Option A: Local LLM (no API key required)
@@ -106,8 +106,8 @@ providers:
 
 ```bash
 ollama pull llama3.2
-cargo run -p hamoru-cli -- providers test
-cargo run -p hamoru-cli -- run -m local:llama3.2 "Hello, world!"
+cargo run --bin hamoru -- providers test
+cargo run --bin hamoru -- run -m local:llama3.2 "Hello, world!"
 ```
 
 ### ☁️ Option B: Cloud LLM (API key required)
@@ -123,21 +123,21 @@ echo  # newline after silent input
 > **Security note:** Avoid typing API keys directly in commands (e.g., `export KEY=sk-ant-...`) — they may be saved in your shell history file. Use `read -rs` as shown above, or load from a secrets manager.
 
 ```bash
-cargo run -p hamoru-cli -- providers test
-cargo run -p hamoru-cli -- run -m claude:claude-sonnet-4-6 "Hello, world!"
+cargo run --bin hamoru -- providers test
+cargo run --bin hamoru -- run -m claude:claude-sonnet-4-6 "Hello, world!"
 ```
 
 ### More examples
 
 ```bash
 # Policy-based model selection
-cargo run -p hamoru-cli -- run -p cost-optimized "Summarize this text"
+cargo run --bin hamoru -- run -p cost-optimized "Summarize this text"
 
 # Tag-based routing
-cargo run -p hamoru-cli -- run --tags review "Review this code for security issues"
+cargo run --bin hamoru -- run --tags review "Review this code for security issues"
 
 # Multi-step workflow
-cargo run -p hamoru-cli -- run -w workflow.yaml "Implement an auth API"
+cargo run --bin hamoru -- run -w workflow.yaml "Implement an auth API"
 ```
 
 ## 🔑 Environment Variables

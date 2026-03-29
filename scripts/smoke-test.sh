@@ -1,15 +1,13 @@
 #!/usr/bin/env bash
 # smoke-test.sh — E2E smoke test for the hamoru CLI.
 #
-# Binary is `hamoru-cli` (from crate package name; no [[bin]] override).
-# The `hamoru` name shown in --help comes from #[command(name = "hamoru")]
-# and does not affect the binary filename.
+# Binary is `hamoru` (via [[bin]] in hamoru-cli crate's Cargo.toml).
 #
 # Usage:
 #   bash scripts/smoke-test.sh              # auto-detect (offline if no API key)
 #   bash scripts/smoke-test.sh --offline    # force offline only
 #   bash scripts/smoke-test.sh --verbose    # show stdout/stderr for every test
-#   HAMORU_BIN=/path/to/hamoru-cli bash scripts/smoke-test.sh  # pre-built binary
+#   HAMORU_BIN=/path/to/hamoru bash scripts/smoke-test.sh  # pre-built binary
 #
 # Exit codes:
 #   0 — all attempted tests passed
@@ -70,12 +68,12 @@ if [[ -n "${HAMORU_BIN:-}" ]]; then
   BIN="$(cd "$(dirname "$HAMORU_BIN")" && pwd)/$(basename "$HAMORU_BIN")"
 else
   # Build from source
-  echo "Building hamoru-cli..."
+  echo "Building hamoru..."
   if ! cargo build --manifest-path "${REPO_ROOT}/Cargo.toml" 2>&1; then
     echo "ERROR: cargo build failed. Set HAMORU_BIN to use a pre-built binary." >&2
     exit 2
   fi
-  BIN="${REPO_ROOT}/target/debug/hamoru-cli"
+  BIN="${REPO_ROOT}/target/debug/hamoru"
   if [[ ! -x "$BIN" ]]; then
     echo "ERROR: Binary not found at $BIN after build." >&2
     exit 2

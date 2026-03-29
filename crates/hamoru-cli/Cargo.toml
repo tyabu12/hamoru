@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[[bin]]
+name = "hamoru"
+path = "src/main.rs"
+
 [dependencies]
 hamoru-core = { path = "../hamoru-core" }
 chrono = { version = "0.4.20", features = ["serde"] }
