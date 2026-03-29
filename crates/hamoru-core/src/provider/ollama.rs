@@ -437,6 +437,7 @@ mod tests {
             temperature: None,
             max_tokens: None,
             tools: None,
+            tool_choice: None,
             stream: false,
         };
 
@@ -466,6 +467,7 @@ mod tests {
             temperature: None,
             max_tokens: None,
             tools: None,
+            tool_choice: None,
             stream: false,
         };
 
@@ -485,6 +487,7 @@ mod tests {
             temperature: Some(0.5),
             max_tokens: Some(200),
             tools: None,
+            tool_choice: None,
             stream: false,
         };
 
@@ -513,6 +516,7 @@ mod tests {
             temperature: None,
             max_tokens: None,
             tools: None,
+            tool_choice: None,
             stream: false,
         };
 

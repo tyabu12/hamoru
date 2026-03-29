@@ -3,6 +3,8 @@
 //! These types define the vocabulary for cross-layer communication.
 //! Provider-specific API types must NOT appear here — only the unified abstractions.
 
+use std::ops::AddAssign;
+
 use serde::{Deserialize, Serialize};
 
 /// Role of a message participant in a conversation.
@@ -121,6 +123,28 @@ pub struct TokenUsage {
     pub cache_read_input_tokens: Option<u64>,
 }
 
+/// Merges two `Option<u64>` cache fields: `None + Some(x) → Some(x)`, `Some(a) + Some(b) → Some(a+b)`.
+fn merge_option_u64(a: Option<u64>, b: Option<u64>) -> Option<u64> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x + y),
+        (Some(x), None) | (None, Some(x)) => Some(x),
+        (None, None) => None,
+    }
+}
+
+impl AddAssign for TokenUsage {
+    fn add_assign(&mut self, rhs: Self) {
+        self.input_tokens += rhs.input_tokens;
+        self.output_tokens += rhs.output_tokens;
+        self.cache_creation_input_tokens = merge_option_u64(
+            self.cache_creation_input_tokens,
+            rhs.cache_creation_input_tokens,
+        );
+        self.cache_read_input_tokens =
+            merge_option_u64(self.cache_read_input_tokens, rhs.cache_read_input_tokens);
+    }
+}
+
 impl TokenUsage {
     /// Calculates the cost in USD based on model pricing.
     pub fn calculate_cost(&self, model_info: &ModelInfo) -> f64 {
@@ -156,6 +180,23 @@ pub struct ToolCall {
     pub arguments: String,
 }
 
+/// How the model should choose which tool to call.
+///
+/// Only meaningful when `tools` is `Some` in the request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolChoice {
+    /// Model decides whether to call a tool.
+    Auto,
+    /// Model must call a tool (any tool from the provided list).
+    Required,
+    /// Model must call a specific tool by name.
+    Tool {
+        /// Name of the tool the model must call.
+        name: String,
+    },
+}
+
 /// A request to an LLM provider.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatRequest {
@@ -169,6 +210,9 @@ pub struct ChatRequest {
     pub max_tokens: Option<u64>,
     /// Tools available for the LLM to call.
     pub tools: Option<Vec<Tool>>,
+    /// How the model should choose which tool to call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<ToolChoice>,
     /// Whether to stream the response.
     pub stream: bool,
 }
@@ -266,6 +310,110 @@ mod tests {
         let model = sample_model();
         let cost = usage.calculate_cost(&model);
         assert!((cost).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn token_usage_add_assign_basic() {
+        let mut a = TokenUsage {
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
+        };
+        let b = TokenUsage {
+            input_tokens: 200,
+            output_tokens: 100,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
+        };
+        a += b;
+        assert_eq!(a.input_tokens, 300);
+        assert_eq!(a.output_tokens, 150);
+        assert!(a.cache_creation_input_tokens.is_none());
+        assert!(a.cache_read_input_tokens.is_none());
+    }
+
+    #[test]
+    fn token_usage_add_assign_merges_cache_fields() {
+        let mut a = TokenUsage {
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_creation_input_tokens: Some(10),
+            cache_read_input_tokens: None,
+        };
+        let b = TokenUsage {
+            input_tokens: 200,
+            output_tokens: 100,
+            cache_creation_input_tokens: Some(20),
+            cache_read_input_tokens: Some(30),
+        };
+        a += b;
+        assert_eq!(a.input_tokens, 300);
+        assert_eq!(a.output_tokens, 150);
+        assert_eq!(a.cache_creation_input_tokens, Some(30));
+        assert_eq!(a.cache_read_input_tokens, Some(30));
+    }
+
+    #[test]
+    fn token_usage_add_assign_default_plus_values() {
+        let mut a = TokenUsage::default();
+        let b = TokenUsage {
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_creation_input_tokens: Some(10),
+            cache_read_input_tokens: Some(20),
+        };
+        a += b;
+        assert_eq!(a.input_tokens, 100);
+        assert_eq!(a.output_tokens, 50);
+        assert_eq!(a.cache_creation_input_tokens, Some(10));
+        assert_eq!(a.cache_read_input_tokens, Some(20));
+    }
+
+    #[test]
+    fn tool_choice_serialization() {
+        let auto = serde_json::to_value(&ToolChoice::Auto).unwrap();
+        assert_eq!(auto, serde_json::json!("auto"));
+
+        let required = serde_json::to_value(&ToolChoice::Required).unwrap();
+        assert_eq!(required, serde_json::json!("required"));
+
+        let tool = serde_json::to_value(&ToolChoice::Tool {
+            name: "report_status".to_string(),
+        })
+        .unwrap();
+        assert_eq!(tool, serde_json::json!({"tool": {"name": "report_status"}}));
+    }
+
+    #[test]
+    fn tool_choice_deserialization_roundtrip() {
+        let choices = vec![
+            ToolChoice::Auto,
+            ToolChoice::Required,
+            ToolChoice::Tool {
+                name: "report_status".to_string(),
+            },
+        ];
+        for choice in choices {
+            let json = serde_json::to_string(&choice).unwrap();
+            let parsed: ToolChoice = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, choice);
+        }
+    }
+
+    #[test]
+    fn chat_request_omits_none_tool_choice() {
+        let request = ChatRequest {
+            model: "test".to_string(),
+            messages: vec![],
+            temperature: None,
+            max_tokens: None,
+            tools: None,
+            tool_choice: None,
+            stream: false,
+        };
+        let json = serde_json::to_value(&request).unwrap();
+        assert!(!json.as_object().unwrap().contains_key("tool_choice"));
     }
 
     #[test]

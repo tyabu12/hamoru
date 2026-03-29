@@ -172,6 +172,7 @@ mod tests {
             temperature: None,
             max_tokens: None,
             tools: None,
+            tool_choice: None,
             stream: false,
         };
         let result = provider.chat(request).await;
@@ -194,6 +195,7 @@ mod tests {
             temperature: None,
             max_tokens: None,
             tools: None,
+            tool_choice: None,
             stream: false,
         };
         let result = provider.chat(request).await;
@@ -213,6 +215,7 @@ mod tests {
             temperature: None,
             max_tokens: None,
             tools: None,
+            tool_choice: None,
             stream: false,
         };
         let result = provider.chat(request).await;
@@ -239,6 +242,7 @@ mod tests {
             temperature: None,
             max_tokens: None,
             tools: None,
+            tool_choice: None,
             stream: false,
         };
         let result = provider.chat(request).await;

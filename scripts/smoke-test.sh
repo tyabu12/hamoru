@@ -40,6 +40,15 @@ done
 # Prevent verbose tracing from leaking secrets via reqwest / tracing output.
 export RUST_LOG="${RUST_LOG:-warn}"
 
+# Portable timeout (GNU coreutils: timeout, macOS Homebrew: gtimeout)
+if command -v timeout > /dev/null 2>&1; then
+  TIMEOUT_CMD=timeout
+elif command -v gtimeout > /dev/null 2>&1; then
+  TIMEOUT_CMD=gtimeout
+else
+  TIMEOUT_CMD=""
+fi
+
 # ---------------------------------------------------------------------------
 # Resolve binary
 # ---------------------------------------------------------------------------
@@ -174,6 +183,18 @@ skip_test() {
   echo "[SKIP] $desc ($reason)"
 }
 
+# Config backup/restore helpers — used by Ollama tests that swap hamoru.yaml.
+backup_config() {
+  cp -r "$WORK_DIR/.hamoru" "$WORK_DIR/.hamoru.bak"
+}
+
+restore_config() {
+  if [[ -d "$WORK_DIR/.hamoru.bak" ]]; then
+    rm -rf "$WORK_DIR/.hamoru"
+    cp -r "$WORK_DIR/.hamoru.bak" "$WORK_DIR/.hamoru"
+  fi
+}
+
 # ---------------------------------------------------------------------------
 # GROUP 1: Offline tests (no API key required)
 # ---------------------------------------------------------------------------
@@ -188,6 +209,7 @@ run_test "init creates .hamoru/ directory" 0 "$BIN" init
 assert_exists ".hamoru/hamoru.yaml" ".hamoru/hamoru.yaml exists after init"
 assert_exists ".hamoru/hamoru.policy.yaml" ".hamoru/hamoru.policy.yaml exists after init"
 run_test "init is idempotent" 0 "$BIN" init
+backup_config
 
 # providers list requires build_registry() which eagerly resolves API keys.
 # Use a fake key since list_models() only reads the hardcoded catalog (no HTTP).
@@ -198,6 +220,34 @@ run_test "providers list succeeds" 0 \
 assert_contains "$STDOUT_FILE" "claude" "providers list output contains 'claude'"
 
 run_test "run (no args) exits non-zero" nonzero "$BIN" run
+
+# Phase 4a: telemetry/metrics/plan commands (no provider needed, init-only)
+run_test "plan (empty telemetry)" 0 "$BIN" plan
+assert_contains "$STDOUT_FILE" "No telemetry data" "plan output shows no-data message"
+
+run_test "metrics (empty telemetry)" 0 "$BIN" metrics --period 7d
+assert_contains "$STDOUT_FILE" "Total requests: 0" "metrics shows zero requests"
+
+run_test "telemetry show (empty store)" 0 "$BIN" telemetry show
+assert_contains "$STDOUT_FILE" "Total entries: 0" "telemetry show reports zero entries"
+
+# Phase 4a: workflow file-not-found error (fake key to pass build_registry)
+run_test "run -w nonexistent file" nonzero \
+  env HAMORU_ANTHROPIC_API_KEY=fake-key "$BIN" run -w nonexistent.yaml "test"
+assert_contains "$STDERR_FILE" "Failed to read workflow file" \
+  "workflow file-not-found produces actionable error"
+
+# Phase 4a: Ollama-only config (no API key, no server needed — catalog fallback)
+cat > "$WORK_DIR/.hamoru/hamoru.yaml" <<'YAML'
+version: "1"
+providers:
+  - name: local
+    type: ollama
+    endpoint: http://127.0.0.1:11434
+YAML
+run_test "providers list (ollama-only config)" 0 "$BIN" providers list
+assert_contains "$STDOUT_FILE" "llama3.3" "ollama catalog contains llama3.3"
+restore_config
 
 # ---------------------------------------------------------------------------
 # GROUP 2: Online tests (requires HAMORU_ANTHROPIC_API_KEY)
@@ -210,17 +260,125 @@ if $OFFLINE; then
   skip_test "providers test" "--offline flag set"
   skip_test "run -p cost-optimized" "--offline flag set"
   skip_test "run -m claude:claude-haiku-4-5" "--offline flag set"
+  skip_test "run --tags review" "--offline flag set"
+  skip_test "run -w workflow (single step)" "--offline flag set"
+  skip_test "run -w workflow (generate-review loop)" "--offline flag set"
 elif [[ -z "${HAMORU_ANTHROPIC_API_KEY:-}" ]]; then
   skip_test "providers test" "HAMORU_ANTHROPIC_API_KEY not set"
   skip_test "run -p cost-optimized" "HAMORU_ANTHROPIC_API_KEY not set"
   skip_test "run -m claude:claude-haiku-4-5" "HAMORU_ANTHROPIC_API_KEY not set"
+  skip_test "run --tags review" "HAMORU_ANTHROPIC_API_KEY not set"
+  skip_test "run -w workflow (single step)" "HAMORU_ANTHROPIC_API_KEY not set"
+  skip_test "run -w workflow (generate-review loop)" "HAMORU_ANTHROPIC_API_KEY not set"
 else
   run_test "providers test" 0 "$BIN" providers test
   run_test "run -p cost-optimized" 0 \
     "$BIN" run -p cost-optimized "Reply with only the word OK" --no-stream
   run_test "run -m claude:claude-haiku-4-5" 0 \
     "$BIN" run -m claude:claude-haiku-4-5 "Reply with only the word OK" --no-stream
+
+  # Phase 4a: tag-based routing (tags: [review] → quality-first → sonnet)
+  run_test "run --tags review" 0 \
+    "$BIN" run --tags review "Reply with only the word OK" --no-stream
+
+  # Phase 4a: workflow execution (single step, no transitions → implicit COMPLETE)
+  # Uses default policy → cost-optimized → claude-haiku-4-5
+  cat > "$WORK_DIR/smoke-workflow.yaml" <<'YAML'
+name: smoke-test
+max_iterations: 2
+steps:
+  - name: respond
+    instruction: "{task}"
+YAML
+  run_test "run -w workflow (single step)" 0 \
+    "$BIN" run -w "$WORK_DIR/smoke-workflow.yaml" "Reply with only the word OK"
+
+  # Phase 4a: multi-step workflow (generate → review loop, tool_calling condition)
+  # max_iterations: 3 caps runaway loops. review instruction says "approve it" to
+  # encourage a single pass. Even if LLM returns "improve", max_iterations returns
+  # Ok with a warning (exit 0) so the test still passes.
+  cat > "$WORK_DIR/smoke-gen-review.yaml" <<'YAML'
+name: smoke-generate-review
+max_iterations: 3
+max_cost: 1.00
+steps:
+  - name: generate
+    instruction: |
+      {task}
+      Keep your response to one short sentence.
+    transitions:
+      - condition: done
+        next: review
+  - name: review
+    instruction: |
+      Review the following output and approve it.
+      {previous_output}
+    transitions:
+      - condition: approved
+        next: COMPLETE
+      - condition: improve
+        next: generate
+YAML
+  run_test "run -w workflow (generate-review loop)" 0 \
+    ${TIMEOUT_CMD:+"$TIMEOUT_CMD" 120} "$BIN" run -w "$WORK_DIR/smoke-gen-review.yaml" "Say hello"
 fi
+
+# ---------------------------------------------------------------------------
+# GROUP 3: Ollama tests (local LLM, no API key required)
+# ---------------------------------------------------------------------------
+
+echo ""
+echo "# GROUP 3: Ollama tests"
+
+OLLAMA_AVAILABLE=false
+if ! $OFFLINE; then
+  # 127.0.0.1 bypasses DNS (no rebinding risk). --max-time 2 prevents hangs.
+  if curl -sf --max-time 2 http://127.0.0.1:11434/api/tags > /dev/null 2>&1; then
+    OLLAMA_AVAILABLE=true
+  fi
+fi
+
+if $OLLAMA_AVAILABLE; then
+  # Swap to Ollama-only config for clean testing
+  cat > "$WORK_DIR/.hamoru/hamoru.yaml" <<'YAML'
+version: "1"
+providers:
+  - name: local
+    type: ollama
+    endpoint: http://127.0.0.1:11434
+YAML
+
+  run_test "providers test (ollama)" 0 "$BIN" providers test
+
+  # Pick the smallest (lightest) pulled model for fast inference.
+  # jq: sort by disk size (correlates with parameter count). grep: first model as fallback.
+  OLLAMA_TAGS=$(curl -sf --max-time 2 http://127.0.0.1:11434/api/tags || true)
+  if command -v jq > /dev/null 2>&1; then
+    OLLAMA_MODEL=$(printf '%s\n' "$OLLAMA_TAGS" \
+      | jq -r '[.models[] | {name, size}] | sort_by(.size) | .[0].name // empty')
+  else
+    OLLAMA_MODEL=$(printf '%s\n' "$OLLAMA_TAGS" \
+      | grep -o '"name":"[^"]*"' | head -1 | cut -d'"' -f4)
+  fi
+
+  if [[ -n "$OLLAMA_MODEL" ]]; then
+    # Portable timeout prevents hangs on slow inference (stock macOS lacks timeout)
+    run_test "run -m local:$OLLAMA_MODEL (ollama)" 0 \
+      ${TIMEOUT_CMD:+"$TIMEOUT_CMD" 60} "$BIN" run -m "local:$OLLAMA_MODEL" "Reply with only the word OK" --no-stream
+  else
+    skip_test "run -m local:<model> (ollama)" "no models available"
+  fi
+
+  restore_config
+else
+  skip_test "providers test (ollama)" "Ollama server not running"
+  skip_test "run -m local:<model> (ollama)" "Ollama server not running"
+fi
+
+# TODO: Multi-step workflow test (generate-review loop) is Anthropic-only (GROUP 2).
+# Ollama does not support tool_choice, so the report_status tool cannot be forced.
+# STATUS line fallback exists but is unreliable with small models.
+# Revisit when Ollama adds tool_choice support.
 
 # ---------------------------------------------------------------------------
 # Summary
