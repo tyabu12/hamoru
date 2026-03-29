@@ -36,7 +36,7 @@ See [design-plan.md](docs/design-plan.md) for the full roadmap.
 
 | Provider | Type | Models (built-in catalog) | Status |
 |----------|------|---------------------------|--------|
-| [Anthropic](https://docs.anthropic.com/) | Cloud API | `claude-sonnet-4-6`, `claude-haiku-4-5` | ✅ Implemented |
+| [Anthropic](https://platform.claude.com/docs/en/home) | Cloud API | `claude-sonnet-4-6`, `claude-haiku-4-5` | ✅ Implemented |
 | [DeepSeek](https://api-docs.deepseek.com/) | OpenAI-compatible | — | 🔲 Planned |
 | [Google Gemini](https://ai.google.dev/gemini-api/docs) | Cloud API | — | 🔲 Planned |
 | [Groq](https://console.groq.com/docs/overview) | OpenAI-compatible | — | 🔲 Planned |
