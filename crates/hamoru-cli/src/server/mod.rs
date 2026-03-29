@@ -31,12 +31,16 @@ use hamoru_core::server::types::{
     OaiChatChunk, OaiChatRequest, OaiChatResponse, OaiChoice, OaiChunkChoice, OaiChunkDelta,
     OaiErrorBody, OaiErrorResponse, OaiResponseMessage, OaiUsage,
 };
-use hamoru_core::telemetry::{HistoryEntry, TelemetryStore};
+use hamoru_core::telemetry::{HistoryEntry, MetricsCache, TelemetryStore};
 use serde_json::json;
 use tokio_stream::wrappers::ReceiverStream;
 
 /// TTL for the cached `/v1/models` response (60 seconds).
 const MODELS_CACHE_TTL: Duration = Duration::from_secs(60);
+
+/// TTL for the cached metrics data (30 seconds).
+#[allow(dead_code)] // Wired in commit 7 (middleware ordering)
+const METRICS_CACHE_TTL: Duration = Duration::from_secs(30);
 
 /// Shared application state for all handlers.
 pub struct AppState {
@@ -48,10 +52,16 @@ pub struct AppState {
     pub telemetry: Box<dyn TelemetryStore>,
     /// Cached `/v1/models` response with TTL to avoid per-request provider calls.
     models_cache: tokio::sync::RwLock<Option<(Instant, serde_json::Value)>>,
+    /// Cached metrics for cost/policy scoring (D4).
+    #[allow(dead_code)] // Wired in commit 7
+    metrics_cache: tokio::sync::RwLock<Option<(Instant, MetricsCache)>>,
+    /// Global daily cost tracker: (date, accumulated_cost) with midnight reset (D12).
+    #[allow(dead_code)] // Wired in commit 7
+    daily_cost: tokio::sync::RwLock<(chrono::NaiveDate, f64)>,
 }
 
 impl AppState {
-    /// Creates a new `AppState` with empty models cache.
+    /// Creates a new `AppState` with empty caches.
     pub fn new(
         providers: ProviderRegistry,
         policy_engine: DefaultPolicyEngine,
@@ -62,8 +72,102 @@ impl AppState {
             policy_engine,
             telemetry,
             models_cache: tokio::sync::RwLock::new(None),
+            metrics_cache: tokio::sync::RwLock::new(None),
+            daily_cost: tokio::sync::RwLock::new((chrono::Utc::now().date_naive(), 0.0)),
         }
     }
+
+    /// Returns a cached `MetricsCache` or refreshes from telemetry (30s TTL).
+    #[allow(dead_code)] // Wired in commit 7
+    async fn get_metrics_cache(&self) -> MetricsCache {
+        {
+            let cache = self.metrics_cache.read().await;
+            if let Some((cached_at, ref metrics)) = *cache
+                && cached_at.elapsed() < METRICS_CACHE_TTL
+            {
+                return metrics.clone();
+            }
+        }
+        // Cache miss — refresh with timeout
+        let metrics = tokio::time::timeout(
+            Duration::from_secs(5),
+            self.telemetry
+                .query_detailed_metrics(Duration::from_secs(7 * 86400)),
+        )
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .unwrap_or_default();
+
+        let mut cache = self.metrics_cache.write().await;
+        *cache = Some((Instant::now(), metrics.clone()));
+        metrics
+    }
+
+    /// Checks and accumulates daily cost. Resets at midnight boundary (D12).
+    ///
+    /// Returns `Ok(())` if within limits, or `Err(HamoruError::CostLimitExceeded)`.
+    #[allow(dead_code)] // Wired in commit 7
+    async fn check_and_accumulate_cost(
+        &self,
+        estimated_cost: f64,
+        max_per_day: Option<f64>,
+    ) -> Result<(), HamoruError> {
+        let mut tracker = self.daily_cost.write().await;
+        let today = chrono::Utc::now().date_naive();
+
+        // Reset on date boundary
+        if tracker.0 != today {
+            *tracker = (today, 0.0);
+        }
+
+        if let Some(limit) = max_per_day {
+            let new_total = tracker.1 + estimated_cost;
+            if new_total > limit {
+                return Err(HamoruError::CostLimitExceeded {
+                    limit: "per_day".to_string(),
+                    current: tracker.1,
+                    max: limit,
+                });
+            }
+        }
+
+        tracker.1 += estimated_cost;
+        Ok(())
+    }
+
+    /// Adjusts the daily cost tracker when actual cost differs from estimate.
+    #[allow(dead_code)] // Wired in commit 7
+    async fn adjust_daily_cost(&self, delta: f64) {
+        let mut tracker = self.daily_cost.write().await;
+        tracker.1 = (tracker.1 + delta).max(0.0);
+    }
+}
+
+#[allow(dead_code)] // Wired in commit 7
+/// Estimates the cost of a request based on OAI message content byte length.
+///
+/// Uses byte_length / 3.0 for input tokens (conservative for CJK/multilingual, D4)
+/// and max_tokens (or 2000 default) for output tokens.
+fn estimate_request_cost(
+    oai_messages: &[hamoru_core::server::types::OaiMessage],
+    max_tokens: Option<u32>,
+    model_info: &hamoru_core::provider::types::ModelInfo,
+) -> f64 {
+    let input_bytes: usize = oai_messages
+        .iter()
+        .map(|m| {
+            m.content
+                .as_ref()
+                .map(|c| c.len())
+                .unwrap_or(0)
+        })
+        .sum();
+    let estimated_input_tokens = (input_bytes as f64 / 3.0).ceil() as u64;
+    let estimated_output_tokens = u64::from(max_tokens.unwrap_or(2000));
+
+    estimated_input_tokens as f64 * model_info.cost_per_input_token
+        + estimated_output_tokens as f64 * model_info.cost_per_output_token
 }
 
 /// Build the axum Router with all API routes.
