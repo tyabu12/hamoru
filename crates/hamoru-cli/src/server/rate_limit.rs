@@ -72,6 +72,7 @@ impl RateLimiter {
     }
 
     /// Evicts entries that have been unused for longer than `max_age`.
+    #[allow(dead_code)] // Called by background eviction task (spawned at server startup)
     pub fn evict_stale(&self, max_age: std::time::Duration) {
         let now = Instant::now();
         self.buckets
@@ -79,6 +80,7 @@ impl RateLimiter {
     }
 
     /// Returns the number of tracked keys (for diagnostics).
+    #[allow(dead_code)] // Used in diagnostics / tests
     pub fn key_count(&self) -> usize {
         self.buckets.len()
     }

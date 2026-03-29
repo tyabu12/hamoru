@@ -236,7 +236,7 @@ fn load_and_build() -> Result<(HamoruConfig, ProviderRegistry), HamoruError> {
 
 /// Starts the OpenAI-compatible API server.
 async fn run_serve(args: ServeArgs) -> Result<(), HamoruError> {
-    let (_config, registry) = load_and_build()?;
+    let (config, registry) = load_and_build()?;
 
     // Load policy engine
     let policy_path = find_policy_config_path()?;
@@ -247,14 +247,50 @@ async fn run_serve(args: ServeArgs) -> Result<(), HamoruError> {
     ensure_hamoru_dir().await?;
     let telemetry = create_telemetry_store().await?;
 
+    // Resolve API keys from environment
+    let api_keys = std::sync::Arc::new(server::auth::resolve_api_keys());
+    if api_keys.is_empty() {
+        tracing::warn!("API server running without authentication. Rate limiting is GLOBAL.");
+    } else {
+        eprintln!("  Auth: {} API key(s) configured", api_keys.len());
+    }
+
+    // Server config defaults (will be overridden by YAML config in future)
+    let server_config = config
+        .server
+        .as_ref()
+        .cloned()
+        .unwrap_or_default();
+    let rate_limiter = std::sync::Arc::new(server::rate_limit::RateLimiter::new(
+        server_config
+            .rate_limit
+            .as_ref()
+            .map(|r| r.requests_per_minute)
+            .unwrap_or(60),
+    ));
+
     let state = std::sync::Arc::new(server::AppState::new(
         registry,
         policy_engine,
         Box::new(telemetry),
     ));
 
-    let app = server::build_router(state);
+    let app = server::build_router(
+        state,
+        api_keys,
+        rate_limiter,
+        server_config.max_request_body_bytes,
+    );
     let bind_addr = format!("{}:{}", args.bind, args.port);
+
+    // Warn about non-localhost exposure
+    if args.bind != "127.0.0.1" {
+        tracing::warn!(
+            bind = %args.bind,
+            "Server bound to non-localhost address. Consider enabling TLS for external exposure."
+        );
+    }
+
     let listener = tokio::net::TcpListener::bind(&bind_addr)
         .await
         .map_err(|e| HamoruError::ConfigError {

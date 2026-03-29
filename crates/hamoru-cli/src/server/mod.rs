@@ -3,10 +3,7 @@
 //! Routes requests through hamoru's provider/policy/orchestration layers
 //! and returns responses in the OpenAI wire format.
 
-// Wired into the router in commit 7 (middleware ordering).
-#[allow(dead_code)]
 pub mod auth;
-#[allow(dead_code)]
 pub mod rate_limit;
 
 use std::sync::Arc;
@@ -54,10 +51,10 @@ pub struct AppState {
     /// Cached `/v1/models` response with TTL to avoid per-request provider calls.
     models_cache: tokio::sync::RwLock<Option<(Instant, serde_json::Value)>>,
     /// Cached metrics for cost/policy scoring (D4).
-    #[allow(dead_code)] // Wired in commit 7
     metrics_cache: tokio::sync::RwLock<Option<(Instant, MetricsCache)>>,
     /// Global daily cost tracker: (date, accumulated_cost) with midnight reset (D12).
-    #[allow(dead_code)] // Wired in commit 7
+    /// Used by cost guardrail checks in the request path.
+    #[allow(dead_code)] // Wired when cost checking is integrated into the handler
     daily_cost: tokio::sync::RwLock<(chrono::NaiveDate, f64)>,
 }
 
@@ -79,7 +76,6 @@ impl AppState {
     }
 
     /// Returns a cached `MetricsCache` or refreshes from telemetry (30s TTL).
-    #[allow(dead_code)] // Wired in commit 7
     async fn get_metrics_cache(&self) -> MetricsCache {
         {
             let cache = self.metrics_cache.read().await;
@@ -108,7 +104,7 @@ impl AppState {
     /// Checks and accumulates daily cost. Resets at midnight boundary (D12).
     ///
     /// Returns `Ok(())` if within limits, or `Err(HamoruError::CostLimitExceeded)`.
-    #[allow(dead_code)] // Wired in commit 7
+    #[allow(dead_code)] // Integration pending: will be called in handler before provider.chat()
     async fn check_and_accumulate_cost(
         &self,
         estimated_cost: f64,
@@ -138,7 +134,7 @@ impl AppState {
     }
 
     /// Adjusts the daily cost tracker when actual cost differs from estimate.
-    #[allow(dead_code)] // Wired in commit 7
+    #[allow(dead_code)] // Integration pending: will be called after actual cost is known
     async fn adjust_daily_cost(&self, delta: f64) {
         let mut tracker = self.daily_cost.write().await;
         tracker.1 = (tracker.1 + delta).max(0.0);
@@ -171,14 +167,55 @@ fn estimate_request_cost(
         + estimated_output_tokens as f64 * model_info.cost_per_output_token
 }
 
-/// Build the axum Router with all API routes.
-// TODO(Phase 5b): Add DefaultBodyLimit::max() layer for explicit request size control
-// TODO(Phase 5b): Add tower::timeout::Timeout layer for non-streaming request timeout
-pub fn build_router(state: Arc<AppState>) -> Router {
+/// Build the axum Router with all API routes and middleware stack.
+///
+/// Middleware ordering (axum layers execute bottom-up):
+/// 1. Auth (first to execute — reject unknown callers ASAP)
+/// 2. Rate Limit (second — reject burst traffic before body parsing)
+/// 3. Body Limit (third — reject oversized payloads)
+/// 4. Handler (last — execute business logic)
+pub fn build_router(
+    state: Arc<AppState>,
+    api_keys: Arc<Vec<String>>,
+    rate_limiter: Arc<rate_limit::RateLimiter>,
+    max_body_bytes: usize,
+) -> Router {
     Router::new()
         .route("/v1/models", get(list_models))
         .route("/v1/chat/completions", post(chat_completions))
         .with_state(state)
+        // Layer ordering: bottom-up execution (last added = first executed)
+        .layer(axum::extract::DefaultBodyLimit::max(max_body_bytes))
+        .layer(axum::middleware::from_fn_with_state(
+            rate_limiter,
+            rate_limit_middleware,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            api_keys,
+            auth::auth_middleware,
+        ))
+}
+
+/// Rate limiting middleware — checks the token bucket for the caller's key.
+async fn rate_limit_middleware(
+    State(limiter): State<Arc<rate_limit::RateLimiter>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Result<Response, Response> {
+    // Use auth identity if available, otherwise global key
+    let key = request
+        .extensions()
+        .get::<auth::AuthIdentity>()
+        .map(|id| id.0.clone())
+        .unwrap_or_else(|| rate_limit::GLOBAL_KEY.to_string());
+
+    match limiter.check(&key) {
+        Ok(()) => Ok(next.run(request).await),
+        Err(retry_after) => Err(ApiError(HamoruError::RateLimitExceeded {
+            retry_after_secs: retry_after,
+        })
+        .into_response()),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -703,6 +740,16 @@ mod tests {
     use hamoru_core::telemetry::memory::InMemoryTelemetryStore;
     use tower::ServiceExt;
 
+    /// Builds a test router with no auth and generous limits.
+    fn test_router(state: Arc<AppState>) -> Router {
+        build_router(
+            state,
+            Arc::new(Vec::new()), // no auth
+            Arc::new(rate_limit::RateLimiter::new(1000)),
+            10 * 1024 * 1024, // 10MB
+        )
+    }
+
     fn test_state(models: Vec<ModelInfo>) -> Arc<AppState> {
         let mut provider = MockProvider::new("test-provider");
         provider.set_models(models);
@@ -742,7 +789,7 @@ mod tests {
     #[tokio::test]
     async fn list_models_returns_provider_and_policy_models() {
         let state = test_state(vec![sample_model()]);
-        let app = build_router(state);
+        let app = test_router(state);
 
         let req = Request::builder()
             .uri("/v1/models")
@@ -774,7 +821,7 @@ mod tests {
     #[tokio::test]
     async fn list_models_empty_providers() {
         let state = test_state(vec![]);
-        let app = build_router(state);
+        let app = test_router(state);
 
         let req = Request::builder()
             .uri("/v1/models")
@@ -843,7 +890,7 @@ mod tests {
     #[tokio::test]
     async fn unknown_route_returns_404() {
         let state = test_state(vec![]);
-        let app = build_router(state);
+        let app = test_router(state);
 
         let req = Request::builder()
             .uri("/v1/nonexistent")
@@ -899,7 +946,7 @@ mod tests {
     #[tokio::test]
     async fn chat_completions_non_streaming_direct_model() {
         let state = test_state_with_response(vec![sample_model()], sample_chat_response());
-        let app = build_router(state);
+        let app = test_router(state);
 
         let body = serde_json::json!({
             "model": "test-provider:test-model",
@@ -946,7 +993,7 @@ mod tests {
             }]),
         };
         let state = test_state_with_response(vec![sample_model()], tool_response);
-        let app = build_router(state);
+        let app = test_router(state);
 
         let body = serde_json::json!({
             "model": "test-provider:test-model",
@@ -983,7 +1030,7 @@ mod tests {
     #[tokio::test]
     async fn chat_completions_invalid_model_returns_404() {
         let state = test_state(vec![sample_model()]);
-        let app = build_router(state);
+        let app = test_router(state);
 
         let body = serde_json::json!({
             "model": "nonexistent:model",
@@ -1045,7 +1092,7 @@ mod tests {
             DefaultPolicyEngine::new(policy_config),
             Box::new(InMemoryTelemetryStore::new()),
         ));
-        let app = build_router(state);
+        let app = test_router(state);
 
         let body = serde_json::json!({
             "model": "test-provider:test-model",
