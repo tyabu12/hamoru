@@ -467,6 +467,7 @@ mod tests {
                     }],
                     context_policy: ContextPolicy::KeepAll,
                     condition_mode: ConditionMode::StatusLine,
+                    dependencies: None,
                 },
                 WorkflowStep {
                     name: "step2".to_string(),
@@ -475,6 +476,7 @@ mod tests {
                     transitions: vec![],
                     context_policy: ContextPolicy::KeepAll,
                     condition_mode: ConditionMode::StatusLine,
+                    dependencies: None,
                 },
             ],
         }
@@ -498,6 +500,7 @@ mod tests {
                     }],
                     context_policy: ContextPolicy::KeepAll,
                     condition_mode: ConditionMode::StatusLine,
+                    dependencies: None,
                 },
                 WorkflowStep {
                     name: "review".to_string(),
@@ -515,6 +518,7 @@ mod tests {
                     ],
                     context_policy: ContextPolicy::KeepAll,
                     condition_mode: ConditionMode::StatusLine,
+                    dependencies: None,
                 },
             ],
         }
@@ -750,6 +754,7 @@ mod tests {
                 transitions: vec![],
                 context_policy: ContextPolicy::KeepAll,
                 condition_mode: ConditionMode::StatusLine,
+                dependencies: None,
             }],
         };
 
@@ -894,6 +899,7 @@ mod tests {
                 transitions: vec![],
                 context_policy: ContextPolicy::KeepAll,
                 condition_mode: ConditionMode::StatusLine,
+                dependencies: None,
             }],
         };
 
@@ -931,6 +937,7 @@ mod tests {
                 transitions: vec![],
                 context_policy: ContextPolicy::KeepAll,
                 condition_mode: ConditionMode::StatusLine,
+                dependencies: None,
             }],
         };
 
