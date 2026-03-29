@@ -90,8 +90,9 @@ pub struct OaiTool {
 pub struct OaiToolFunction {
     /// Function name.
     pub name: String,
-    /// Description.
-    pub description: String,
+    /// Description (optional per OpenAI spec).
+    #[serde(default)]
+    pub description: Option<String>,
     /// JSON Schema for parameters.
     #[serde(default)]
     pub parameters: serde_json::Value,

@@ -247,11 +247,11 @@ async fn run_serve(args: ServeArgs) -> Result<(), HamoruError> {
     ensure_hamoru_dir().await?;
     let telemetry = create_telemetry_store().await?;
 
-    let state = std::sync::Arc::new(server::AppState {
-        providers: registry,
+    let state = std::sync::Arc::new(server::AppState::new(
+        registry,
         policy_engine,
-        telemetry: Box::new(telemetry),
-    });
+        Box::new(telemetry),
+    ));
 
     let app = server::build_router(state);
     let bind_addr = format!("{}:{}", args.bind, args.port);

@@ -212,6 +212,8 @@ pub struct ToolCall {
 pub enum ToolChoice {
     /// Model decides whether to call a tool.
     Auto,
+    /// Model must not call any tool. Tools are visible but suppressed.
+    None,
     /// Model must call a tool (any tool from the provided list).
     Required,
     /// Model must call a specific tool by name.
@@ -478,9 +480,16 @@ mod tests {
     }
 
     #[test]
+    fn tool_choice_none_serialization() {
+        let none = serde_json::to_value(&ToolChoice::None).unwrap();
+        assert_eq!(none, serde_json::json!("none"));
+    }
+
+    #[test]
     fn tool_choice_deserialization_roundtrip() {
         let choices = vec![
             ToolChoice::Auto,
+            ToolChoice::None,
             ToolChoice::Required,
             ToolChoice::Tool {
                 name: "report_status".to_string(),

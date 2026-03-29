@@ -83,7 +83,7 @@ pub fn oai_tools_to_internal(tools: &[super::types::OaiTool]) -> Vec<Tool> {
         .iter()
         .map(|t| Tool {
             name: t.function.name.clone(),
-            description: t.function.description.clone(),
+            description: t.function.description.clone().unwrap_or_default(),
             parameters: t.function.parameters.clone(),
         })
         .collect()
@@ -95,7 +95,7 @@ pub fn oai_tool_choice_to_internal(choice: &OaiToolChoice) -> Result<ToolChoice,
         OaiToolChoice::Mode(mode) => match mode.as_str() {
             "auto" => Ok(ToolChoice::Auto),
             "required" => Ok(ToolChoice::Required),
-            "none" => Ok(ToolChoice::Auto), // "none" maps to auto (no forced choice)
+            "none" => Ok(ToolChoice::None),
             other => Err(HamoruError::ConfigError {
                 reason: format!("Unknown tool_choice mode: '{other}'"),
             }),
@@ -376,6 +376,15 @@ mod tests {
     }
 
     #[test]
+    fn tool_choice_none() {
+        let choice = OaiToolChoice::Mode("none".to_string());
+        assert_eq!(
+            oai_tool_choice_to_internal(&choice).unwrap(),
+            ToolChoice::None
+        );
+    }
+
+    #[test]
     fn tool_choice_required() {
         let choice = OaiToolChoice::Mode("required".to_string());
         assert_eq!(
@@ -412,7 +421,7 @@ mod tests {
             tool_type: "function".to_string(),
             function: super::super::types::OaiToolFunction {
                 name: "search".to_string(),
-                description: "Search the web".to_string(),
+                description: Some("Search the web".to_string()),
                 parameters: serde_json::json!({"type": "object"}),
             },
         }];
@@ -420,5 +429,19 @@ mod tests {
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name, "search");
         assert_eq!(tools[0].description, "Search the web");
+    }
+
+    #[test]
+    fn oai_tools_to_internal_without_description() {
+        let oai_tools = vec![super::super::types::OaiTool {
+            tool_type: "function".to_string(),
+            function: super::super::types::OaiToolFunction {
+                name: "search".to_string(),
+                description: None,
+                parameters: serde_json::json!({"type": "object"}),
+            },
+        }];
+        let tools = oai_tools_to_internal(&oai_tools);
+        assert_eq!(tools[0].description, "");
     }
 }

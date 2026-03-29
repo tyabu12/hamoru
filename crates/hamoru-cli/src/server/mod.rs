@@ -4,7 +4,7 @@
 //! and returns responses in the OpenAI wire format.
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::{
     Json, Router,
@@ -29,6 +29,9 @@ use hamoru_core::telemetry::{HistoryEntry, TelemetryStore};
 use serde_json::json;
 use tokio_stream::wrappers::ReceiverStream;
 
+/// TTL for the cached `/v1/models` response (60 seconds).
+const MODELS_CACHE_TTL: Duration = Duration::from_secs(60);
+
 /// Shared application state for all handlers.
 pub struct AppState {
     /// Provider registry for LLM API calls.
@@ -37,9 +40,29 @@ pub struct AppState {
     pub policy_engine: DefaultPolicyEngine,
     /// Telemetry store for recording API calls.
     pub telemetry: Box<dyn TelemetryStore>,
+    /// Cached `/v1/models` response with TTL to avoid per-request provider calls.
+    models_cache: tokio::sync::RwLock<Option<(Instant, serde_json::Value)>>,
+}
+
+impl AppState {
+    /// Creates a new `AppState` with empty models cache.
+    pub fn new(
+        providers: ProviderRegistry,
+        policy_engine: DefaultPolicyEngine,
+        telemetry: Box<dyn TelemetryStore>,
+    ) -> Self {
+        Self {
+            providers,
+            policy_engine,
+            telemetry,
+            models_cache: tokio::sync::RwLock::new(None),
+        }
+    }
 }
 
 /// Build the axum Router with all API routes.
+// TODO(Phase 5b): Add DefaultBodyLimit::max() layer for explicit request size control
+// TODO(Phase 5b): Add tower::timeout::Timeout layer for non-streaming request timeout
 pub fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/v1/models", get(list_models))
@@ -53,15 +76,32 @@ pub fn build_router(state: Arc<AppState>) -> Router {
 
 /// Lists available models in the OpenAI format.
 ///
-/// Includes direct provider models and policy-based virtual models.
+/// Uses a TTL cache to avoid calling `list_models()` on every provider per request.
+/// Provider calls are parallelized via `join_all`.
 async fn list_models(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let mut models = Vec::new();
+    // Check cache
+    {
+        let cache = state.models_cache.read().await;
+        if let Some((cached_at, ref response)) = *cache
+            && cached_at.elapsed() < MODELS_CACHE_TTL
+        {
+            return Ok(Json(response.clone()));
+        }
+    }
 
-    // Direct provider models: <provider>:<model>
-    for provider in state.providers.iter() {
-        let provider_models = provider.list_models().await.map_err(ApiError)?;
+    // Cache miss or expired — fetch from providers in parallel
+    let futures: Vec<_> = state
+        .providers
+        .iter()
+        .map(|provider| provider.list_models())
+        .collect();
+    let results = futures::future::join_all(futures).await;
+
+    let mut models = Vec::new();
+    for result in results {
+        let provider_models = result.map_err(ApiError)?;
         for model_info in &provider_models {
             let model_id = format!("{}:{}", model_info.provider, model_info.id);
             models.push(json!({
@@ -84,10 +124,18 @@ async fn list_models(
         }));
     }
 
-    Ok(Json(json!({
+    let response = json!({
         "object": "list",
         "data": models,
-    })))
+    });
+
+    // Update cache
+    {
+        let mut cache = state.models_cache.write().await;
+        *cache = Some((Instant::now(), response.clone()));
+    }
+
+    Ok(Json(response))
 }
 
 // ---------------------------------------------------------------------------
@@ -171,6 +219,7 @@ async fn chat_completions(
             usage: None,
             hamoru: None,
         };
+        // TODO: unwrap_or_default silently swallows serialization errors — consider logging
         let first_data = serde_json::to_string(&first_chunk).unwrap_or_default();
         let _ = tx.send(Ok(Event::default().data(first_data))).await;
 
@@ -182,6 +231,8 @@ async fn chat_completions(
             let mut stream = std::pin::pin!(stream);
             let mut final_usage = None;
 
+            // TODO(Phase 5b): Wrap stream.next() with tokio::time::timeout to prevent
+            // indefinitely hanging connections when a provider stream stalls.
             while let Some(chunk_result) = stream.next().await {
                 match chunk_result {
                     Ok(chunk) => {
@@ -190,7 +241,6 @@ async fn chat_completions(
                             final_usage = chunk.usage.clone();
                         }
 
-                        // Build SSE chunk
                         let oai_chunk = OaiChatChunk {
                             id: response_id.clone(),
                             object: "chat.completion.chunk".to_string(),
@@ -223,6 +273,7 @@ async fn chat_completions(
                             hamoru: None,
                         };
 
+                        // TODO: unwrap_or_default silently swallows serialization errors
                         let data = serde_json::to_string(&oai_chunk).unwrap_or_default();
                         if tx.send(Ok(Event::default().data(data))).await.is_err() {
                             break; // Client disconnected
@@ -277,32 +328,12 @@ async fn chat_completions(
         let response = provider.chat(chat_request).await?;
         let latency_ms = start.elapsed().as_millis() as u64;
 
-        // Record telemetry (best-effort)
-        let model_info = provider.model_info(&model_id).await.ok();
-        let cost = model_info
-            .as_ref()
-            .map(|mi| response.usage.calculate_cost(mi))
-            .unwrap_or(0.0);
-
-        let entry = HistoryEntry {
-            timestamp: Utc::now(),
-            provider: provider_id.clone(),
-            model: model_id.clone(),
-            tokens: response.usage.clone(),
-            cost,
-            latency_ms,
-            success: true,
-            tags: vec![],
-        };
-        if let Err(e) = state.telemetry.record(&entry).await {
-            tracing::warn!("Failed to record telemetry: {e}");
-        }
-
-        // Build OpenAI response
+        // Build OpenAI response first, then record telemetry in background
+        // to avoid adding model_info lookup latency to the response path.
         let (content, oai_tool_calls) = translate::chat_response_to_oai_parts(&response);
         let response_id = format!("chatcmpl-{}", uuid::Uuid::new_v4());
 
-        Ok(Json(OaiChatResponse {
+        let oai_response = OaiChatResponse {
             id: response_id,
             object: "chat.completion".to_string(),
             created: Utc::now().timestamp(),
@@ -321,8 +352,37 @@ async fn chat_completions(
                 completion_tokens: response.usage.output_tokens,
                 total_tokens: response.usage.input_tokens + response.usage.output_tokens,
             },
-        })
-        .into_response())
+        };
+
+        // Record telemetry in background to avoid blocking the response.
+        // Re-lookup provider via state (Arc'd, 'static) to satisfy spawn's lifetime.
+        let state_clone = Arc::clone(&state);
+        let usage_clone = response.usage.clone();
+        tokio::spawn(async move {
+            let cost = if let Some(p) = state_clone.providers.get(&provider_id) {
+                p.model_info(&model_id)
+                    .await
+                    .map(|mi| usage_clone.calculate_cost(&mi))
+                    .unwrap_or(0.0)
+            } else {
+                0.0
+            };
+            let entry = HistoryEntry {
+                timestamp: Utc::now(),
+                provider: provider_id,
+                model: model_id,
+                tokens: usage_clone,
+                cost,
+                latency_ms,
+                success: true,
+                tags: vec![],
+            };
+            if let Err(e) = state_clone.telemetry.record(&entry).await {
+                tracing::warn!("Failed to record telemetry: {e}");
+            }
+        });
+
+        Ok(Json(oai_response).into_response())
     }
 }
 
@@ -378,6 +438,9 @@ impl From<HamoruError> for ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, error_type, code) = classify_error(&self.0);
+        // TODO(Phase 5b): For the catch-all 500 case, consider returning a generic
+        // "Internal server error" message instead of self.0.to_string() to avoid
+        // leaking internal implementation details to API clients.
         let body = OaiErrorResponse {
             error: OaiErrorBody {
                 message: self.0.to_string(),
@@ -460,11 +523,7 @@ mod tests {
         let policy_engine = DefaultPolicyEngine::new(policy_config);
         let telemetry = Box::new(InMemoryTelemetryStore::new());
 
-        Arc::new(AppState {
-            providers: registry,
-            policy_engine,
-            telemetry,
-        })
+        Arc::new(AppState::new(registry, policy_engine, telemetry))
     }
 
     fn sample_model() -> ModelInfo {
@@ -618,11 +677,7 @@ mod tests {
         let policy_engine = DefaultPolicyEngine::new(policy_config);
         let telemetry = Box::new(InMemoryTelemetryStore::new());
 
-        Arc::new(AppState {
-            providers: registry,
-            policy_engine,
-            telemetry,
-        })
+        Arc::new(AppState::new(registry, policy_engine, telemetry))
     }
 
     fn sample_chat_response() -> hamoru_core::provider::types::ChatResponse {
@@ -785,11 +840,11 @@ mod tests {
             }],
             ..Default::default()
         };
-        let state = Arc::new(AppState {
-            providers: registry,
-            policy_engine: DefaultPolicyEngine::new(policy_config),
-            telemetry: Box::new(InMemoryTelemetryStore::new()),
-        });
+        let state = Arc::new(AppState::new(
+            registry,
+            DefaultPolicyEngine::new(policy_config),
+            Box::new(InMemoryTelemetryStore::new()),
+        ));
         let app = build_router(state);
 
         let body = serde_json::json!({
