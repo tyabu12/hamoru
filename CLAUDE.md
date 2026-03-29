@@ -125,8 +125,9 @@ Prefix the subject line with a single emoji that captures the spirit of the chan
 | 007 | Agent Framework Integration Design — content block types, tool_call buffering, SSE progress | Cross-cutting (Phase 5 + type design) |
 | 008 | API Server Crate Placement — axum in hamoru-cli vs dedicated crate | design-plan.md Phase 5 |
 | 009 | Parallel Execution Design — dependencies field, join_all, wave execution, merge format | design-plan.md Phase 4b |
+| 010 | Reasoning Budget Control — phased declarative reasoning budget | Future (post-Phase 5) |
 
-Next available number: **010**. Increment sequentially from here.
+Next available number: **011**. Increment sequentially from here.
 
 ## Agent Configuration
 
