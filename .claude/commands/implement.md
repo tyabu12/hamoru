@@ -8,6 +8,11 @@ argument-hint: "[description | issue-number | phase N]"
 
 Orchestrate the full development workflow: plan → issue → worktree → TDD implementation → review → PR.
 
+## Constants
+
+- `PLAN_MARKER`: `<!-- hamoru-plan -->` — machine-readable marker embedded in Issue plan comments for detection during resumption.
+- `OWNER_REPO`: derived at runtime via `gh repo view --json nameWithOwner -q '.nameWithOwner'`.
+
 ## Step 0: Input Detection & Pre-flight
 
 Interpret `$ARGUMENTS`:
@@ -33,7 +38,13 @@ Derive from the task spec:
 
 1. Read `CLAUDE.md` for current phase and conventions.
 2. If phase-related, read ONLY the relevant Phase section from `docs/design-plan.md`.
-3. Present: files to change, tests to write, expected commits.
+3. Format the plan as a numbered checkbox list (each item = one planned commit):
+   ```
+   - [ ] 1. <description> (`<primary-file-path>`)
+   - [ ] 2. <description> (`<primary-file-path>`)
+   ...
+   ```
+   Present this plan to the user. Store internally as `PLAN_BODY` for Issue attachment in Step 2.
 4. **Ask: "Proceed with this plan?"** — For single-commit fixes, combine G1 and G2 into one confirmation.
 
 ## Step 2: Issue + Worktree — Gate G2
