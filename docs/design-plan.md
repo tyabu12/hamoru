@@ -1360,6 +1360,8 @@ response = client.chat.completions.create(
 # → All results returned in OpenAI format
 ```
 
+**Testing note**: The OpenAI-compatible provider is planned post-v1.0, but Phase 5 tool_calls passthrough validation requires end-to-end testing of the OpenAI wire format round-trip (OpenAI format → internal ContentPart → provider format → internal ContentPart → OpenAI format). Consider prioritizing a minimal OpenAI-compat provider adapter (or mock) in Phase 5 to validate the "near-passthrough" path where the wire format and provider format are both OpenAI. Without this, edge cases in the translation layer may go undetected until post-v1.0.
+
 **Learning points**: Understanding OpenAI API spec (including tool_calls wire format), SSE implementation with axum, API gateway design, tool_call buffering strategy, content block translation between provider formats and wire formats.
 
 ### Phase 6: Agent Collaboration Engine (Layer 5 — Core Differentiator)
