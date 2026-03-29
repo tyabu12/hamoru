@@ -11,7 +11,7 @@ Orchestrate the full development workflow: plan → issue → worktree → TDD i
 ## Constants
 
 - `PLAN_MARKER`: `<!-- hamoru-plan -->` — machine-readable marker embedded in Issue plan comments for detection during resumption.
-- `OWNER_REPO`: derived at runtime via `gh repo view --json nameWithOwner -q '.nameWithOwner'`.
+- `OWNER_REPO`: derived at runtime via `gh repo view --json nameWithOwner -q '.nameWithOwner'`. Resolve early in Step 0 (before any `gh api` calls).
 
 ## Step 0: Input Detection & Pre-flight
 
@@ -34,10 +34,11 @@ After fetching the issue, check for an existing plan comment:
    ```
    Use the **last** matching comment (handles multiple plan comments from retries).
 2. If a plan comment is found:
-   - Set `RESUMING=true` and capture `COMMENT_ID`.
+   - Set `RESUMING=true`, `ISSUE_NUMBER=N`, and capture `COMMENT_ID`.
    - Parse checkboxes: count `- [x]` (done) vs `- [ ]` (remaining). Identify `NEXT_ITEM` (first unchecked item number).
    - Extract `TASK_TYPE` and branch name from the `## Metadata` section in the comment.
    - Derive `SLUG` from the branch name.
+   - If **all items are already checked** (no `- [ ]` remaining): ensure you are on the feature branch or in the correct worktree (use Step 2b's worktree detection logic if needed), then report "All {TOTAL} items already complete. Proceeding to review." and **skip to Step 4** directly.
    - Report to user: "Found existing plan on issue #N. {DONE}/{TOTAL} items complete. Resuming from item {NEXT_ITEM}."
    - **Skip Step 1 entirely** → proceed to Step 2.
 3. If no plan comment found: proceed normally (Step 1 creates the plan, Step 2 attaches it).
@@ -106,7 +107,7 @@ After fetching the issue, check for an existing plan comment:
   )")
   ```
   Extract `ISSUE_NUMBER` from the URL.
-- Post the plan as the first comment (same format as the `#N` case above).
+- Post the plan as the first comment (same format as the `#N` case above). **Capture `COMMENT_ID` from the response** (`--jq '.id'`) — it is required for checkpoint sync in Step 3.
 
 ### 2b: Worktree Setup
 
@@ -128,7 +129,7 @@ After fetching the issue, check for an existing plan comment:
 
 Follow the plan from Step 1 (or the resumed plan from the Issue). **If `RESUMING=true`**, start from item `NEXT_ITEM` — skip already-checked items.
 
-For each unit of work:
+For each unit of work (let `K` = the current plan item number):
 1. Write test first (TDD mandatory per CLAUDE.md Phase 1+).
 2. `cargo test` — confirm failure.
 3. Write implementation.
@@ -137,7 +138,7 @@ For each unit of work:
 6. **Sync checkpoint to GitHub Issue** — update the plan comment to check off the completed item:
    ```bash
    BODY=$(gh api "repos/${OWNER_REPO}/issues/comments/${COMMENT_ID}" --jq '.body')
-   UPDATED=$(echo "$BODY" | sed "s/- \[ \] ${K}\./- [x] ${K}./")
+   UPDATED=$(echo "$BODY" | sed "s/^- \[ \] ${K}\./- [x] ${K}./")
    gh api "repos/${OWNER_REPO}/issues/comments/${COMMENT_ID}" -X PATCH -f body="$UPDATED" --jq '.url'
    ```
    Where `K` is the plan item number. If a single commit covers multiple items, check all applicable boxes in one PATCH. If `gh` fails, **warn and continue** — never block implementation on a sync failure.
