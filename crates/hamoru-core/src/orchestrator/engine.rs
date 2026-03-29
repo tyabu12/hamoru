@@ -612,7 +612,17 @@ async fn execute_step(
         policy_applied: selection.policy_applied,
     };
 
-    Ok((step_result, target.clone(), response.content))
+    // Use step output as raw_content fallback when response has no text
+    // (tool-calling-only responses produce empty content). Without this,
+    // the assistant message is skipped from message_history (line 175),
+    // breaking {previous_output} injection for subsequent steps.
+    let raw_content = if response.content.trim().is_empty() {
+        step_result.output.clone()
+    } else {
+        response.content
+    };
+
+    Ok((step_result, target.clone(), raw_content))
 }
 
 /// Collects models from all providers, skipping unavailable ones.
@@ -703,7 +713,9 @@ mod tests {
         PolicyConfig, PolicyConstraints, PolicyDefinition, PolicyPreferences, Priority,
     };
     use crate::provider::mock::MockProvider;
-    use crate::provider::types::{Capability, ChatResponse, FinishReason, ModelInfo, TokenUsage};
+    use crate::provider::types::{
+        Capability, ChatResponse, FinishReason, ModelInfo, TokenUsage, ToolCall,
+    };
     use crate::telemetry::memory::InMemoryTelemetryStore;
 
     // -----------------------------------------------------------------------
@@ -1115,6 +1127,115 @@ mod tests {
 
         assert_eq!(result.steps_executed.len(), 2);
         assert_eq!(result.terminated_reason, TerminationReason::Completed);
+    }
+
+    #[tokio::test]
+    async fn tool_calling_previous_output_not_empty() {
+        // When step 1 uses tool calling (empty response.content),
+        // step 2 should receive the reason as previous_output, not empty string.
+        let provider = build_test_provider();
+        provider.queue_chat_response(Ok(response_with_tool_status(
+            "done",
+            "Generated auth module",
+        )));
+        provider.queue_chat_response(Ok(simple_response("Final result")));
+        let registry = build_registry(provider);
+        let policy = DefaultPolicyEngine::new(test_policy_config());
+        let telemetry = InMemoryTelemetryStore::new();
+
+        let mut workflow = two_step_workflow();
+        workflow.steps[0].condition_mode = ConditionMode::ToolCalling;
+        // Step 2 uses {previous_output} to verify propagation
+        workflow.steps[1].instruction = "Continue from: {previous_output}".to_string();
+
+        let engine = DefaultOrchestrationEngine;
+        let result = engine
+            .execute(&workflow, "task", &policy, &registry, &telemetry)
+            .await
+            .unwrap();
+
+        assert_eq!(result.steps_executed.len(), 2);
+        // Step 1 output should be the reason, not empty
+        assert_eq!(result.steps_executed[0].output, "Generated auth module");
+        assert_eq!(result.final_output, "Final result");
+    }
+
+    #[tokio::test]
+    async fn tool_calling_review_loop_propagates_reason() {
+        // Full review loop with tool calling: all outputs should be non-empty
+        let provider = build_test_provider();
+        provider.queue_chat_response(Ok(response_with_tool_status("done", "Generated code v1")));
+        provider.queue_chat_response(Ok(response_with_tool_status(
+            "improve",
+            "Missing error handling",
+        )));
+        provider.queue_chat_response(Ok(response_with_tool_status("done", "Generated code v2")));
+        provider.queue_chat_response(Ok(response_with_tool_status("approved", "Looks good now")));
+        let registry = build_registry(provider);
+        let policy = DefaultPolicyEngine::new(test_policy_config());
+        let telemetry = InMemoryTelemetryStore::new();
+
+        let mut workflow = review_loop_workflow();
+        workflow.steps[0].condition_mode = ConditionMode::ToolCalling;
+        workflow.steps[1].condition_mode = ConditionMode::ToolCalling;
+
+        let engine = DefaultOrchestrationEngine;
+        let result = engine
+            .execute(&workflow, "write code", &policy, &registry, &telemetry)
+            .await
+            .unwrap();
+
+        assert_eq!(result.steps_executed.len(), 4);
+        assert_eq!(result.terminated_reason, TerminationReason::Completed);
+        // All step outputs should be non-empty (reason fallback working)
+        for (i, step) in result.steps_executed.iter().enumerate() {
+            assert!(
+                !step.output.is_empty(),
+                "Step {i} output should not be empty"
+            );
+        }
+        assert_eq!(result.steps_executed[0].output, "Generated code v1");
+        assert_eq!(result.steps_executed[1].output, "Missing error handling");
+    }
+
+    #[tokio::test]
+    async fn tool_calling_empty_reason_degrades_gracefully() {
+        // When both content and reason are empty, previous_output falls back
+        // to original task (existing behavior, no regression).
+        let provider = build_test_provider();
+        // Tool call with no reason field — degenerate case
+        let degenerate_response = ChatResponse {
+            content: String::new(),
+            model: "test-model".to_string(),
+            usage: TokenUsage::default(),
+            latency_ms: 100,
+            finish_reason: FinishReason::ToolUse,
+            tool_calls: Some(vec![ToolCall {
+                id: "call_001".to_string(),
+                name: "report_status".to_string(),
+                arguments: r#"{"status":"done"}"#.to_string(),
+            }]),
+        };
+        provider.queue_chat_response(Ok(degenerate_response));
+        provider.queue_chat_response(Ok(simple_response("Final")));
+        let registry = build_registry(provider);
+        let policy = DefaultPolicyEngine::new(test_policy_config());
+        let telemetry = InMemoryTelemetryStore::new();
+
+        let mut workflow = two_step_workflow();
+        workflow.steps[0].condition_mode = ConditionMode::ToolCalling;
+
+        let engine = DefaultOrchestrationEngine;
+        let result = engine
+            .execute(&workflow, "task", &policy, &registry, &telemetry)
+            .await
+            .unwrap();
+
+        // Should complete without panicking — graceful degradation
+        assert_eq!(result.steps_executed.len(), 2);
+        // Step 1 output is empty (no reason available), but workflow continues
+        assert_eq!(result.steps_executed[0].output, "");
+        assert_eq!(result.final_output, "Final");
     }
 
     #[tokio::test]

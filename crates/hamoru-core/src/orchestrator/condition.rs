@@ -120,10 +120,19 @@ fn extract_status_from_tool_call(response: &ChatResponse) -> Option<StepOutput> 
         .and_then(|r| r.as_str())
         .map(String::from);
 
+    // When the LLM response has only tool_use blocks (no text), use the tool
+    // call's reason as content fallback. This prevents empty previous_output
+    // in multi-step workflows where tool_choice is forced.
+    let content = if response.content.trim().is_empty() {
+        reason.as_deref().unwrap_or_default().to_string()
+    } else {
+        response.content.clone()
+    };
+
     Some(StepOutput {
         full_content: response.content.clone(),
         status: normalize_status(status),
-        content: response.content.clone(),
+        content,
         reason,
     })
 }
@@ -228,6 +237,30 @@ pub(crate) mod tests {
         }
     }
 
+    /// Creates a ChatResponse with a report_status tool call AND text content.
+    pub(crate) fn response_with_tool_status_and_content(
+        status: &str,
+        reason: &str,
+        content: &str,
+    ) -> ChatResponse {
+        ChatResponse {
+            content: content.to_string(),
+            model: "test-model".to_string(),
+            usage: TokenUsage::default(),
+            latency_ms: 100,
+            finish_reason: FinishReason::ToolUse,
+            tool_calls: Some(vec![ToolCall {
+                id: "call_001".to_string(),
+                name: REPORT_STATUS_TOOL_NAME.to_string(),
+                arguments: serde_json::json!({
+                    "status": status,
+                    "reason": reason,
+                })
+                .to_string(),
+            }]),
+        }
+    }
+
     /// Creates a simple ChatResponse with text content only.
     pub(crate) fn simple_response(content: &str) -> ChatResponse {
         ChatResponse {
@@ -268,6 +301,57 @@ pub(crate) mod tests {
         let output = extract_status_from_tool_call(&response).unwrap();
         assert_eq!(output.status, "approved");
         assert_eq!(output.reason.as_deref(), Some("Looks good"));
+    }
+
+    #[test]
+    fn tool_call_empty_content_uses_reason_as_content() {
+        let response = response_with_tool_status("approved", "Code looks great");
+        let output = extract_status_from_tool_call(&response).unwrap();
+        assert_eq!(output.content, "Code looks great");
+        // full_content preserves raw LLM output (empty when only tool_use blocks)
+        assert_eq!(output.full_content, "");
+        assert_eq!(output.status, "approved");
+        assert_eq!(output.reason.as_deref(), Some("Code looks great"));
+    }
+
+    #[test]
+    fn tool_call_with_text_content_preserves_original() {
+        let response =
+            response_with_tool_status_and_content("approved", "Reason text", "Some analysis");
+        let output = extract_status_from_tool_call(&response).unwrap();
+        assert_eq!(output.content, "Some analysis");
+        assert_eq!(output.full_content, "Some analysis");
+    }
+
+    #[test]
+    fn tool_call_empty_content_no_reason() {
+        // When both content and reason are missing, degrade gracefully to empty
+        let response = ChatResponse {
+            content: String::new(),
+            model: "test".to_string(),
+            usage: TokenUsage::default(),
+            latency_ms: 100,
+            finish_reason: FinishReason::ToolUse,
+            tool_calls: Some(vec![ToolCall {
+                id: "call_001".to_string(),
+                name: REPORT_STATUS_TOOL_NAME.to_string(),
+                arguments: r#"{"status":"done"}"#.to_string(),
+            }]),
+        };
+        let output = extract_status_from_tool_call(&response).unwrap();
+        assert_eq!(output.content, "");
+        assert_eq!(output.status, "done");
+        assert!(output.reason.is_none());
+    }
+
+    #[test]
+    fn tool_call_whitespace_content_uses_reason() {
+        let response = response_with_tool_status_and_content("approved", "Looks good", "   \n  ");
+        let output = extract_status_from_tool_call(&response).unwrap();
+        // Whitespace-only content treated as empty, falls back to reason
+        assert_eq!(output.content, "Looks good");
+        // full_content preserves raw whitespace
+        assert_eq!(output.full_content, "   \n  ");
     }
 
     #[test]
