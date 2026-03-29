@@ -656,6 +656,7 @@ async fn record_telemetry_failed(
         latency_ms,
         success: false,
         tags: tags.to_vec(),
+        request_id: None,
     };
     if let Err(e) = telemetry.record(&entry).await {
         tracing::warn!("Failed to record telemetry: {e}");
@@ -681,6 +682,7 @@ async fn record_telemetry(
         latency_ms,
         success: true,
         tags: tags.to_vec(),
+        request_id: None,
     };
     if let Err(e) = telemetry.record(&entry).await {
         tracing::warn!("Failed to record telemetry: {e}");

@@ -22,6 +22,9 @@ pub struct HamoruConfig {
     /// Telemetry storage configuration.
     #[serde(default)]
     pub telemetry: Option<TelemetryConfig>,
+    /// API server configuration for `hamoru serve`.
+    #[serde(default)]
+    pub server: Option<ServerConfig>,
 }
 
 impl HamoruConfig {
@@ -96,6 +99,89 @@ pub struct DefaultsConfig {
     /// Default policy name.
     #[serde(default)]
     pub policy: Option<String>,
+}
+
+/// API server configuration for `hamoru serve`.
+///
+/// All fields are optional with sane defaults, ensuring backward compatibility
+/// with config files that predate Phase 5b. This struct contains YAML parsing
+/// types only — runtime construction of axum layers is the CLI's responsibility.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ServerConfig {
+    /// Environment variable names that hold API keys (informational).
+    /// Actual key resolution uses `HAMORU_API_KEYS` env var at startup.
+    #[serde(default)]
+    pub api_key_env_names: Vec<String>,
+
+    /// Rate limiting configuration.
+    #[serde(default)]
+    pub rate_limit: Option<RateLimitConfig>,
+
+    /// Non-streaming request timeout in seconds. Default: 300.
+    #[serde(default = "ServerConfig::default_request_timeout_secs")]
+    pub request_timeout_secs: u64,
+
+    /// Max time between consecutive streaming chunks before timeout. Default: 30.
+    #[serde(default = "ServerConfig::default_stream_stall_timeout_secs")]
+    pub stream_stall_timeout_secs: u64,
+
+    /// Max total duration for a streaming response. Default: 300.
+    #[serde(default = "ServerConfig::default_max_stream_duration_secs")]
+    pub max_stream_duration_secs: u64,
+
+    /// Max request body size in bytes. Default: 10 MB.
+    #[serde(default = "ServerConfig::default_max_request_body_bytes")]
+    pub max_request_body_bytes: usize,
+}
+
+impl ServerConfig {
+    fn default_request_timeout_secs() -> u64 {
+        300
+    }
+    fn default_stream_stall_timeout_secs() -> u64 {
+        30
+    }
+    fn default_max_stream_duration_secs() -> u64 {
+        300
+    }
+    fn default_max_request_body_bytes() -> usize {
+        10 * 1024 * 1024
+    }
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            api_key_env_names: Vec::new(),
+            rate_limit: None,
+            request_timeout_secs: Self::default_request_timeout_secs(),
+            stream_stall_timeout_secs: Self::default_stream_stall_timeout_secs(),
+            max_stream_duration_secs: Self::default_max_stream_duration_secs(),
+            max_request_body_bytes: Self::default_max_request_body_bytes(),
+        }
+    }
+}
+
+/// Rate limiting configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RateLimitConfig {
+    /// Maximum requests per minute. Default: 60.
+    #[serde(default = "RateLimitConfig::default_requests_per_minute")]
+    pub requests_per_minute: u32,
+}
+
+impl RateLimitConfig {
+    fn default_requests_per_minute() -> u32 {
+        60
+    }
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            requests_per_minute: Self::default_requests_per_minute(),
+        }
+    }
 }
 
 /// Telemetry storage configuration.
@@ -352,6 +438,78 @@ providers:
         let config = parse_config(yaml).unwrap();
         assert!(config.telemetry.is_none());
         assert_eq!(config.telemetry_local_path(), ".hamoru/state.db");
+    }
+
+    #[test]
+    fn parse_config_with_server_section() {
+        let yaml = r#"
+version: "1"
+providers:
+  - name: local
+    type: ollama
+server:
+  api_key_env_names:
+    - HAMORU_API_KEY_PROD
+    - HAMORU_API_KEY_DEV
+  rate_limit:
+    requests_per_minute: 120
+  request_timeout_secs: 600
+  stream_stall_timeout_secs: 60
+  max_stream_duration_secs: 600
+  max_request_body_bytes: 5242880
+"#;
+        let config = parse_config(yaml).unwrap();
+        let server = config.server.as_ref().unwrap();
+        assert_eq!(server.api_key_env_names.len(), 2);
+        assert_eq!(server.api_key_env_names[0], "HAMORU_API_KEY_PROD");
+        assert_eq!(server.request_timeout_secs, 600);
+        assert_eq!(server.stream_stall_timeout_secs, 60);
+        assert_eq!(server.max_stream_duration_secs, 600);
+        assert_eq!(server.max_request_body_bytes, 5_242_880);
+        let rate = server.rate_limit.as_ref().unwrap();
+        assert_eq!(rate.requests_per_minute, 120);
+    }
+
+    #[test]
+    fn parse_config_without_server_section() {
+        let yaml = r#"
+version: "1"
+providers:
+  - name: local
+    type: ollama
+"#;
+        let config = parse_config(yaml).unwrap();
+        assert!(config.server.is_none());
+    }
+
+    #[test]
+    fn server_config_defaults() {
+        let config = ServerConfig::default();
+        assert!(config.api_key_env_names.is_empty());
+        assert!(config.rate_limit.is_none());
+        assert_eq!(config.request_timeout_secs, 300);
+        assert_eq!(config.stream_stall_timeout_secs, 30);
+        assert_eq!(config.max_stream_duration_secs, 300);
+        assert_eq!(config.max_request_body_bytes, 10 * 1024 * 1024);
+    }
+
+    #[test]
+    fn server_config_partial_yaml_uses_defaults() {
+        let yaml = r#"
+version: "1"
+providers:
+  - name: local
+    type: ollama
+server:
+  request_timeout_secs: 60
+"#;
+        let config = parse_config(yaml).unwrap();
+        let server = config.server.as_ref().unwrap();
+        assert_eq!(server.request_timeout_secs, 60);
+        // Other fields should be defaults
+        assert_eq!(server.stream_stall_timeout_secs, 30);
+        assert_eq!(server.max_request_body_bytes, 10 * 1024 * 1024);
+        assert!(server.rate_limit.is_none());
     }
 
     #[test]

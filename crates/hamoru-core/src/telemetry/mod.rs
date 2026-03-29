@@ -62,6 +62,11 @@ pub struct HistoryEntry {
     /// Empty until Policy Engine (Phase 3) populates them.
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Request ID for audit trail correlation (Phase 5b).
+    ///
+    /// Set by the API server; `None` for CLI-originated requests.
+    #[serde(default)]
+    pub request_id: Option<String>,
 }
 
 /// Aggregated metrics over a time period.

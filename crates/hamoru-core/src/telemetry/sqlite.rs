@@ -540,6 +540,7 @@ mod tests {
             latency_ms: 500,
             success: true,
             tags: vec![],
+            request_id: None,
         }
     }
 

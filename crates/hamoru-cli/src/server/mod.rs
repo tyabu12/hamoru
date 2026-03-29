@@ -301,6 +301,7 @@ async fn chat_completions(
                     latency_ms,
                     success: true,
                     tags: vec![],
+                    request_id: None,
                 };
                 if let Err(e) = state_clone.telemetry.record(&entry).await {
                     tracing::warn!("Failed to record telemetry: {e}");
@@ -376,6 +377,7 @@ async fn chat_completions(
                 latency_ms,
                 success: true,
                 tags: vec![],
+                request_id: None,
             };
             if let Err(e) = state_clone.telemetry.record(&entry).await {
                 tracing::warn!("Failed to record telemetry: {e}");

@@ -630,6 +630,7 @@ async fn run_prompt(args: RunArgs) -> Result<(), HamoruError> {
         latency_ms,
         success: true,
         tags,
+        request_id: None,
     };
     telemetry.record(&entry).await?;
 
