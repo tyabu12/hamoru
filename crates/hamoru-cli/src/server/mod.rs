@@ -375,65 +375,87 @@ async fn chat_completions(
         let first_data = serde_json::to_string(&first_chunk).unwrap_or_default();
         let _ = tx.send(Ok(Event::default().data(first_data))).await;
 
-        // Spawn stream consumer task
+        // Spawn stream consumer task with hybrid timeout (D8):
+        //   - Per-chunk stall: 30s max between consecutive chunks
+        //   - Total duration: 300s max for the entire stream
         // Safety: telemetry is behind Arc (AppState is Arc'd), so we clone the Arc
         let state_clone = Arc::clone(&state);
+        let stall_timeout = Duration::from_secs(30);
+        let max_duration = Duration::from_secs(300);
         tokio::spawn(async move {
             let start = Instant::now();
             let mut stream = std::pin::pin!(stream);
             let mut final_usage = None;
 
-            // TODO(Phase 5b): Wrap stream.next() with tokio::time::timeout to prevent
-            // indefinitely hanging connections when a provider stream stalls.
-            while let Some(chunk_result) = stream.next().await {
-                match chunk_result {
-                    Ok(chunk) => {
-                        // Capture final usage for telemetry
-                        if chunk.usage.is_some() {
-                            final_usage = chunk.usage.clone();
-                        }
+            loop {
+                // Check total stream duration
+                if start.elapsed() > max_duration {
+                    tracing::warn!("Stream exceeded max duration ({max_duration:?}), terminating");
+                    break;
+                }
 
-                        let oai_chunk = OaiChatChunk {
-                            id: response_id.clone(),
-                            object: "chat.completion.chunk".to_string(),
-                            created,
-                            model: model_label.clone(),
-                            choices: vec![OaiChunkChoice {
-                                index: 0,
-                                delta: OaiChunkDelta {
-                                    role: None,
-                                    content: if chunk.delta.is_empty() {
-                                        None
-                                    } else {
-                                        Some(chunk.delta)
-                                    },
-                                    tool_calls: chunk
-                                        .tool_calls
-                                        .as_ref()
-                                        .map(|tcs| translate::tool_calls_to_oai(tcs)),
-                                },
-                                finish_reason: chunk
-                                    .finish_reason
-                                    .as_ref()
-                                    .map(|fr| translate::finish_reason_to_oai(fr).to_string()),
-                            }],
-                            usage: chunk.usage.as_ref().map(|u| OaiUsage {
-                                prompt_tokens: u.input_tokens,
-                                completion_tokens: u.output_tokens,
-                                total_tokens: u.input_tokens + u.output_tokens,
-                            }),
-                            hamoru: None,
-                        };
+                // Hybrid: per-chunk stall timeout + client disconnect detection
+                tokio::select! {
+                    chunk_result = tokio::time::timeout(stall_timeout, stream.next()) => {
+                        match chunk_result {
+                            Ok(Some(Ok(chunk))) => {
+                                // Capture final usage for telemetry
+                                if chunk.usage.is_some() {
+                                    final_usage = chunk.usage.clone();
+                                }
 
-                        // TODO: unwrap_or_default silently swallows serialization errors
-                        let data = serde_json::to_string(&oai_chunk).unwrap_or_default();
-                        if tx.send(Ok(Event::default().data(data))).await.is_err() {
-                            break; // Client disconnected
+                                let oai_chunk = OaiChatChunk {
+                                    id: response_id.clone(),
+                                    object: "chat.completion.chunk".to_string(),
+                                    created,
+                                    model: model_label.clone(),
+                                    choices: vec![OaiChunkChoice {
+                                        index: 0,
+                                        delta: OaiChunkDelta {
+                                            role: None,
+                                            content: if chunk.delta.is_empty() {
+                                                None
+                                            } else {
+                                                Some(chunk.delta)
+                                            },
+                                            tool_calls: chunk
+                                                .tool_calls
+                                                .as_ref()
+                                                .map(|tcs| translate::tool_calls_to_oai(tcs)),
+                                        },
+                                        finish_reason: chunk
+                                            .finish_reason
+                                            .as_ref()
+                                            .map(|fr| translate::finish_reason_to_oai(fr).to_string()),
+                                    }],
+                                    usage: chunk.usage.as_ref().map(|u| OaiUsage {
+                                        prompt_tokens: u.input_tokens,
+                                        completion_tokens: u.output_tokens,
+                                        total_tokens: u.input_tokens + u.output_tokens,
+                                    }),
+                                    hamoru: None,
+                                };
+
+                                let data = serde_json::to_string(&oai_chunk).unwrap_or_default();
+                                if tx.send(Ok(Event::default().data(data))).await.is_err() {
+                                    tracing::info!("Client disconnected during stream");
+                                    return; // Client gone, skip telemetry
+                                }
+                            }
+                            Ok(Some(Err(e))) => {
+                                tracing::warn!("Stream error: {e}");
+                                break;
+                            }
+                            Ok(None) => break, // Stream ended normally
+                            Err(_) => {
+                                tracing::warn!("Stream stalled for {stall_timeout:?}, terminating");
+                                break;
+                            }
                         }
                     }
-                    Err(e) => {
-                        tracing::warn!("Stream error: {e}");
-                        break;
+                    _ = tx.closed() => {
+                        tracing::info!("Client disconnected, terminating stream");
+                        return; // Client gone, skip telemetry
                     }
                 }
             }
