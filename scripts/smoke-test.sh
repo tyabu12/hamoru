@@ -193,8 +193,7 @@ run_test "init is idempotent" 0 "$BIN" init
 run_test "providers list succeeds" 0 \
   env HAMORU_ANTHROPIC_API_KEY=fake-key "$BIN" providers list
 
-# Check that providers list output contains expected provider name
-HAMORU_ANTHROPIC_API_KEY=fake-key "$BIN" providers list > "$STDOUT_FILE" 2>/dev/null || true
+# Reuse $STDOUT_FILE from the run_test above (already captured providers list output).
 assert_contains "$STDOUT_FILE" "claude" "providers list output contains 'claude'"
 
 run_test "run (no args) exits non-zero" nonzero "$BIN" run
