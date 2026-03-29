@@ -36,12 +36,16 @@ See [design-plan.md](docs/design-plan.md) for the full roadmap.
 
 | Provider | Type | Models (built-in catalog) | Status |
 |----------|------|---------------------------|--------|
-| [Anthropic](https://www.anthropic.com/) | Cloud API | `claude-sonnet-4-6`, `claude-haiku-4-5` | ✅ Implemented |
-| Google Gemini | Cloud API | — | 🔲 Planned |
+| [Anthropic](https://platform.claude.com/docs/en/home) | Cloud API | `claude-sonnet-4-6`, `claude-haiku-4-5` | ✅ Implemented |
+| [DeepSeek](https://api-docs.deepseek.com/) | OpenAI-compatible | — | 🔲 Planned |
+| [Google Gemini](https://ai.google.dev/gemini-api/docs) | Cloud API | — | 🔲 Planned |
+| [Groq](https://console.groq.com/docs/overview) | OpenAI-compatible | — | 🔲 Planned |
 | [Ollama](https://ollama.com) | Local | `llama3.3:70b`, `qwen2.5-coder:14b` | ✅ Implemented |
-| OpenAI | Cloud API | — | 🔲 Planned |
+| [OpenAI](https://platform.openai.com/docs) | Cloud API | — | 🔲 Planned |
 
 > Models listed above are from the built-in catalog with default pricing. You can configure any model your provider supports via `hamoru.yaml` — including custom cost overrides.
+>
+> Providers marked **OpenAI-compatible** will use the OpenAI adapter with a custom `base_url`. Any OpenAI-compatible API (Mistral, Together, Fireworks, etc.) can be configured the same way.
 
 ## 🏗️ Architecture
 
@@ -88,7 +92,8 @@ cargo run -p hamoru-cli -- init
 
 ### Option A: Local LLM (no API key required)
 
-Install [Ollama](https://ollama.com), then add it to your config (`.hamoru/hamoru.yaml`):
+Install [Ollama](https://ollama.com), then add it to your config (`.hamoru/hamoru.yaml`).  
+We use `llama3.2` (3B, ~2 GB) here for a quick first run — you can swap in any model Ollama supports:
 
 ```yaml
 providers:
