@@ -198,7 +198,9 @@ pub enum HamoruError {
     ///
     /// Distinct from `CredentialNotFound` (missing provider env var at startup).
     /// This variant is for runtime per-request authentication failures.
-    #[error("Authentication failed: {reason}. Provide a valid API key via Authorization: Bearer header.")]
+    #[error(
+        "Authentication failed: {reason}. Provide a valid API key via Authorization: Bearer header."
+    )]
     Unauthorized {
         /// Human-readable reason (e.g., "invalid API key", "missing Authorization header").
         reason: String,

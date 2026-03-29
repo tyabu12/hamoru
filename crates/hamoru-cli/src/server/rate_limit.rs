@@ -44,13 +44,14 @@ impl RateLimiter {
         let refill_rate = f64::from(rpm) / 60.0;
         let now = Instant::now();
 
-        let mut entry = self.buckets.entry(key.to_string()).or_insert_with(|| {
-            TokenBucketEntry {
+        let mut entry = self
+            .buckets
+            .entry(key.to_string())
+            .or_insert_with(|| TokenBucketEntry {
                 tokens: f64::from(rpm),
                 last_refill: now,
                 last_used: now,
-            }
-        });
+            });
 
         // Refill tokens based on elapsed time
         let elapsed = now.duration_since(entry.last_refill).as_secs_f64();

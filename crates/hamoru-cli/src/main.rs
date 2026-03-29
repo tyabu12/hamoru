@@ -256,11 +256,7 @@ async fn run_serve(args: ServeArgs) -> Result<(), HamoruError> {
     }
 
     // Server config defaults (will be overridden by YAML config in future)
-    let server_config = config
-        .server
-        .as_ref()
-        .cloned()
-        .unwrap_or_default();
+    let server_config = config.server.as_ref().cloned().unwrap_or_default();
     let rate_limiter = std::sync::Arc::new(server::rate_limit::RateLimiter::new(
         server_config
             .rate_limit

@@ -18,6 +18,7 @@ use axum::{
 };
 use chrono::Utc;
 use futures::StreamExt;
+use futures::future::join_all;
 use hamoru_core::error::HamoruError;
 use hamoru_core::policy::{DefaultPolicyEngine, PolicyEngine};
 use hamoru_core::provider::ProviderRegistry;
@@ -28,7 +29,6 @@ use hamoru_core::server::types::{
     OaiChatChunk, OaiChatRequest, OaiChatResponse, OaiChoice, OaiChunkChoice, OaiChunkDelta,
     OaiErrorBody, OaiErrorResponse, OaiResponseMessage, OaiUsage,
 };
-use futures::future::join_all;
 use hamoru_core::telemetry::{HistoryEntry, MetricsCache, TelemetryStore};
 use serde_json::json;
 use tokio_stream::wrappers::ReceiverStream;
@@ -153,12 +153,7 @@ fn estimate_request_cost(
 ) -> f64 {
     let input_bytes: usize = oai_messages
         .iter()
-        .map(|m| {
-            m.content
-                .as_ref()
-                .map(|c| c.len())
-                .unwrap_or(0)
-        })
+        .map(|m| m.content.as_ref().map(|c| c.len()).unwrap_or(0))
         .sum();
     let estimated_input_tokens = (input_bytes as f64 / 3.0).ceil() as u64;
     let estimated_output_tokens = u64::from(max_tokens.unwrap_or(2000));
