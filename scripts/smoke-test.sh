@@ -83,6 +83,7 @@ echo "# Binary: $BIN"
 # Use WORK_DIR (not TMPDIR) to avoid shadowing the system temp directory variable.
 WORK_DIR="$(mktemp -d)"
 
+# shellcheck disable=SC2317  # Invoked indirectly via trap EXIT
 cleanup() {
   if [[ -n "${WORK_DIR:-}" && -d "$WORK_DIR" ]]; then
     rm -rf "$WORK_DIR"
