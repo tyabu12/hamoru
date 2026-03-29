@@ -22,7 +22,7 @@ with policy-based model selection and cost impact prediction.
 
 ## 🎯 Current Phase
 
-**Phase 4a: Orchestration Engine — Sequential**
+**Phase 5: API Server (serve)**
 
 See [design-plan.md](docs/design-plan.md) for the full roadmap.
 

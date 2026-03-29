@@ -224,7 +224,15 @@ impl DefaultOrchestrationEngine {
         // Per-step outputs indexed by step index, for predecessor lookups
         let mut step_outputs: Vec<Option<String>> = vec![None; dag.step_count];
 
+        tracing::info!(
+            workflow = %workflow.name,
+            waves = dag.waves.len(),
+            "Starting parallel DAG execution"
+        );
+
         for (wave_idx, wave) in dag.waves.iter().enumerate() {
+            tracing::debug!(wave = wave_idx, steps = wave.len(), "Executing wave");
+
             // Pre-wave guard: check remaining budget before launching steps
             if let Some(max_cost) = workflow.max_cost
                 && accumulated_cost >= max_cost
@@ -1699,6 +1707,89 @@ mod tests {
                 );
             }
             other => panic!("Expected ConditionEvaluationFailed, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn parallel_condition_eval_error_in_wave() {
+        let provider = build_test_provider();
+        // Wave 1: generate
+        provider.queue_chat_response(Ok(simple_response("gen")));
+        // Wave 2: review has transitions but returns no STATUS → condition eval failure
+        // ToolCalling mode with transitions but response has no tool_calls and no STATUS line
+        provider.queue_chat_response(Ok(simple_response("no status here")));
+        provider.queue_chat_response(Ok(simple_response("also no status")));
+        let registry = build_registry(provider);
+        let policy = DefaultPolicyEngine::new(test_policy_config());
+        let telemetry = InMemoryTelemetryStore::new();
+
+        let workflow = Workflow {
+            name: "cond-err".to_string(),
+            description: None,
+            max_iterations: 10,
+            max_cost: None,
+            default_condition_mode: ConditionMode::ToolCalling,
+            steps: vec![
+                WorkflowStep {
+                    name: "generate".to_string(),
+                    tags: vec![],
+                    instruction: "{task}".to_string(),
+                    transitions: vec![],
+                    context_policy: ContextPolicy::KeepAll,
+                    condition_mode: ConditionMode::ToolCalling,
+                    dependencies: Some(vec![]),
+                },
+                WorkflowStep {
+                    name: "review".to_string(),
+                    tags: vec![],
+                    instruction: "Review: {previous_output}".to_string(),
+                    transitions: vec![Transition {
+                        condition: "approved".to_string(),
+                        next: TransitionTarget::Complete,
+                    }],
+                    context_policy: ContextPolicy::KeepAll,
+                    condition_mode: ConditionMode::ToolCalling,
+                    dependencies: Some(vec!["generate".to_string()]),
+                },
+                WorkflowStep {
+                    name: "security".to_string(),
+                    tags: vec![],
+                    instruction: "Audit: {previous_output}".to_string(),
+                    transitions: vec![Transition {
+                        condition: "approved".to_string(),
+                        next: TransitionTarget::Complete,
+                    }],
+                    context_policy: ContextPolicy::KeepAll,
+                    condition_mode: ConditionMode::ToolCalling,
+                    dependencies: Some(vec!["generate".to_string()]),
+                },
+            ],
+        };
+
+        let engine = DefaultOrchestrationEngine;
+        let err = engine
+            .execute(&workflow, "task", &policy, &registry, &telemetry)
+            .await
+            .unwrap_err();
+
+        // Should fail with MidWorkflowFailure (condition eval error wrapped)
+        // or ConditionEvaluationFailed
+        match err {
+            HamoruError::MidWorkflowFailure {
+                partial_results, ..
+            } => {
+                // Generate step should be in partial results
+                assert!(
+                    !partial_results.is_empty(),
+                    "Should have partial results from generate step"
+                );
+            }
+            HamoruError::ConditionEvaluationFailed { .. } => {
+                // Also acceptable — depends on whether error is caught in wave processing
+            }
+            other => {
+                panic!("Expected MidWorkflowFailure or ConditionEvaluationFailed, got: {other:?}")
+            }
         }
     }
 }
