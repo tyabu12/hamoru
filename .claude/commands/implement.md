@@ -48,7 +48,7 @@ After fetching the issue, check for an existing plan comment:
 3. Verify on default branch (skip if `RESUMING=true` — resumption may start from a worktree or feature branch):
    - `DEFAULT_BRANCH=$(gh repo view --json defaultBranchRef -q '.defaultBranchRef.name')`
    - If current branch != `DEFAULT_BRANCH`, warn and offer `git checkout "$DEFAULT_BRANCH"`.
-4. `git pull --ff-only origin "$DEFAULT_BRANCH"` — warn on failure, don't block. Skip if `RESUMING=true`.
+4. `git pull --ff-only origin "$DEFAULT_BRANCH"` — warn on failure, don't block. Skip if `RESUMING=true` (the feature branch already has the correct state; pulling default would be wrong).
 5. If already in a worktree, warn and suggest `ExitWorktree` first (unless `RESUMING=true` and the worktree matches the expected branch).
 
 ## Step 1: Plan — Gate G1
@@ -89,7 +89,7 @@ After fetching the issue, check for an existing plan comment:
   ```
   Set `ISSUE_NUMBER=N`.
 
-**Otherwise** (new task — always create issue):
+**Otherwise** (new task — always create issue, because checkpoint sync and resumption require a `COMMENT_ID` on a real Issue):
 - Create a new issue:
   ```bash
   ISSUE_URL=$(gh issue create \
