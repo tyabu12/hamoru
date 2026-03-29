@@ -274,15 +274,23 @@ pub fn sanitize_error(
 /// Replaces known credential patterns in a message with `[REDACTED]`.
 ///
 /// Uses simple prefix/substring matching — no regex dependency needed.
+/// Pattern ordering matters: more-specific prefixes (e.g., `sk-ant-`) must precede
+/// broader ones (e.g., `sk-`) to avoid partial matches.
 fn sanitize_message(msg: &str) -> String {
     let mut result = msg.to_string();
 
-    // Anthropic API keys: sk-ant-...
-    result = redact_token_pattern(&result, "sk-ant-");
-    // Generic sk- keys (OpenAI-style): sk- followed by 20+ alphanum
-    result = redact_token_pattern(&result, "sk-");
+    // Token-prefix patterns (alphanum + dash/underscore/dot body)
+    let token_char = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.';
+    // Anthropic API keys: sk-ant-... (most specific prefix first)
+    result = redact_pattern(&result, "sk-ant-", &token_char, 10);
+    // Generic sk- keys (OpenAI-style): sk- followed by alphanum
+    result = redact_pattern(&result, "sk-", &token_char, 10);
+
+    // Auth scheme patterns (non-whitespace body)
+    let non_ws = |c: char| !c.is_ascii_whitespace();
     // Bearer tokens
-    result = redact_bearer(&result);
+    result = redact_pattern(&result, "Bearer ", &non_ws, 10);
+
     // URL-embedded credentials: ://user:pass@
     result = redact_url_credentials(&result);
     // api_key=... query parameters
@@ -291,47 +299,35 @@ fn sanitize_message(msg: &str) -> String {
     result
 }
 
-/// Redacts tokens starting with a given prefix (e.g., "sk-ant-", "sk-").
-fn redact_token_pattern(msg: &str, prefix: &str) -> String {
+/// Redacts tokens matching `prefix` followed by characters satisfying `is_token_char`.
+///
+/// `min_len`: minimum token-body length (after prefix) to trigger redaction. Avoids
+/// false positives on short coincidental prefix matches (e.g., "sk-widget").
+/// Tokens whose body starts with `[REDACTED]` are skipped to prevent double-redaction
+/// across multiple sanitization passes.
+fn redact_pattern(
+    msg: &str,
+    prefix: &str,
+    is_token_char: &impl Fn(char) -> bool,
+    min_len: usize,
+) -> String {
     let mut result = String::with_capacity(msg.len());
     let mut remaining = msg;
 
     while let Some(pos) = remaining.find(prefix) {
         result.push_str(&remaining[..pos]);
         let after_prefix = &remaining[pos + prefix.len()..];
-        // Token continues while alphanumeric, dash, or underscore
         let token_end = after_prefix
-            .find(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_' && c != '.')
+            .find(|c: char| !is_token_char(c))
             .unwrap_or(after_prefix.len());
-        if token_end >= 10 {
+        let token_body = &after_prefix[..token_end];
+        if token_end >= min_len && !token_body.starts_with("[REDACTED]") {
             result.push_str("[REDACTED]");
         } else {
-            // Too short to be a real key — preserve it
+            // Too short or already redacted — preserve original text
             result.push_str(&remaining[pos..pos + prefix.len() + token_end]);
         }
         remaining = &after_prefix[token_end..];
-    }
-    result.push_str(remaining);
-    result
-}
-
-/// Redacts "Bearer <token>" patterns.
-fn redact_bearer(msg: &str) -> String {
-    let mut result = String::with_capacity(msg.len());
-    let mut remaining = msg;
-
-    while let Some(pos) = remaining.find("Bearer ") {
-        result.push_str(&remaining[..pos]);
-        let after = &remaining[pos + 7..]; // skip "Bearer "
-        let token_end = after
-            .find(|c: char| c.is_ascii_whitespace())
-            .unwrap_or(after.len());
-        if token_end >= 10 {
-            result.push_str("[REDACTED]");
-        } else {
-            result.push_str(&remaining[pos..pos + 7 + token_end]);
-        }
-        remaining = &after[token_end..];
     }
     result.push_str(remaining);
     result
