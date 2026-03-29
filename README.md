@@ -193,6 +193,7 @@ bash scripts/smoke-test.sh
 # With Ollama tests (start Ollama in a separate terminal first)
 # Terminal 1: ollama serve
 # Terminal 2:
+ollama pull qwen2.5:0.5b  # recommended: lightweight (~400MB), responds in seconds
 bash scripts/smoke-test.sh
 
 # Verbose output (show stdout/stderr for all tests)
