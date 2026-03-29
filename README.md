@@ -140,6 +140,28 @@ cargo run --bin hamoru -- run --tags review "Review this code for security issue
 cargo run --bin hamoru -- run -w workflow.yaml "Implement an auth API"
 ```
 
+### 🌐 OpenAI-compatible API server
+
+```bash
+# Start the server (localhost:3000 by default)
+HAMORU_API_KEYS=my-secret-key cargo run --bin hamoru -- serve
+
+# In another terminal — use any OpenAI-compatible client
+curl http://localhost:3000/v1/models \
+  -H "Authorization: Bearer my-secret-key"
+
+curl http://localhost:3000/v1/chat/completions \
+  -H "Authorization: Bearer my-secret-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "claude:claude-sonnet-4-6",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+> **Tip:** Omit `HAMORU_API_KEYS` to skip authentication (convenient for local dev).
+> Use `--port` and `--bind` to customize the listen address.
+
 ## 🔑 Environment Variables
 
 | Variable | Provider | Status |
