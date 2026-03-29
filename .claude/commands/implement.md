@@ -126,14 +126,23 @@ After fetching the issue, check for an existing plan comment:
 
 ## Step 3: Implementation (TDD)
 
-Follow the plan from Step 1. For each unit of work:
+Follow the plan from Step 1 (or the resumed plan from the Issue). **If `RESUMING=true`**, start from item `NEXT_ITEM` — skip already-checked items.
+
+For each unit of work:
 1. Write test first (TDD mandatory per CLAUDE.md Phase 1+).
 2. `cargo test` — confirm failure.
 3. Write implementation.
 4. `cargo test` — confirm pass.
 5. Commit (Conventional Commits + emoji per CLAUDE.md).
+6. **Sync checkpoint to GitHub Issue** — update the plan comment to check off the completed item:
+   ```bash
+   BODY=$(gh api "repos/${OWNER_REPO}/issues/comments/${COMMENT_ID}" --jq '.body')
+   UPDATED=$(echo "$BODY" | sed "s/- \[ \] ${K}\./- [x] ${K}./")
+   gh api "repos/${OWNER_REPO}/issues/comments/${COMMENT_ID}" -X PATCH -f body="$UPDATED" --jq '.url'
+   ```
+   Where `K` is the plan item number. If a single commit covers multiple items, check all applicable boxes in one PATCH. If `gh` fails, **warn and continue** — never block implementation on a sync failure.
 
-Note: `git commit` is NOT in the permissions allowlist — each commit triggers user approval (intentional security gate). Suggest batching into fewer commits if the user finds this disruptive.
+Note: `git commit` is NOT in the permissions allowlist — each commit triggers user approval (intentional security gate). The checkpoint sync (step 6) runs immediately after commit approval, adding ~0.4s per commit. Suggest batching into fewer commits if the user finds this disruptive.
 
 PostToolUse hooks (`cargo fmt`, `cargo clippy`) fire automatically on every Write/Edit inside the worktree.
 
@@ -179,7 +188,7 @@ Additionally, if the changes are security-related (dependencies, auth, secrets, 
 
 Present PR draft (title + body + label) for user review:
 - Title: Emoji prefix + Conventional format, under 70 chars (same emoji convention as CLAUDE.md commits)
-- Body: Summary bullets + test plan + `Closes #N` if applicable
+- Body: Summary bullets + test plan + `Closes #N` (always present — Issue is always created)
 - Label: from the table above
 - Assignee: always `@me`
 
