@@ -81,7 +81,11 @@ impl fmt::Debug for ContentPart {
             ContentPart::Text { .. } => {
                 f.debug_struct("Text").field("text", &"<redacted>").finish()
             }
-            ContentPart::ImageUrl { url } => f.debug_struct("ImageUrl").field("url", url).finish(),
+            // Redact URL: signed URLs may embed tokens or API keys in query params.
+            ContentPart::ImageUrl { .. } => f
+                .debug_struct("ImageUrl")
+                .field("url", &"<redacted>")
+                .finish(),
             ContentPart::ImageBase64 { media_type, .. } => f
                 .debug_struct("ImageBase64")
                 .field("media_type", media_type)
@@ -319,13 +323,10 @@ impl fmt::Debug for ChatRequest {
             .field("max_tokens", &self.max_tokens)
             .field(
                 "tools",
-                &format_args!(
-                    "{}",
-                    match &self.tools {
-                        Some(t) => format!("[{} tools]", t.len()),
-                        None => "None".to_string(),
-                    }
-                ),
+                &match &self.tools {
+                    Some(t) => format!("[{} tools]", t.len()),
+                    None => "None".to_string(),
+                },
             )
             .field("tool_choice", &self.tool_choice)
             .field("stream", &self.stream)
@@ -361,13 +362,10 @@ impl fmt::Debug for ChatResponse {
             .field("finish_reason", &self.finish_reason)
             .field(
                 "tool_calls",
-                &format_args!(
-                    "{}",
-                    match &self.tool_calls {
-                        Some(tc) => format!("[{} tool_calls]", tc.len()),
-                        None => "None".to_string(),
-                    }
-                ),
+                &match &self.tool_calls {
+                    Some(tc) => format!("[{} tool_calls]", tc.len()),
+                    None => "None".to_string(),
+                },
             )
             .finish()
     }
@@ -412,13 +410,10 @@ impl fmt::Debug for ChatChunk {
             .field("usage", &self.usage)
             .field(
                 "tool_calls",
-                &format_args!(
-                    "{}",
-                    match &self.tool_calls {
-                        Some(tc) => format!("[{} tool_calls]", tc.len()),
-                        None => "None".to_string(),
-                    }
-                ),
+                &match &self.tool_calls {
+                    Some(tc) => format!("[{} tool_calls]", tc.len()),
+                    None => "None".to_string(),
+                },
             )
             .finish()
     }
@@ -824,12 +819,15 @@ mod tests {
     }
 
     #[test]
-    fn content_part_debug_shows_image_url() {
+    fn content_part_debug_redacts_image_url() {
         let part = ContentPart::ImageUrl {
-            url: "https://example.com/img.png".to_string(),
+            url: "https://example.com/img.png?token=SECRET_TOKEN".to_string(),
         };
         let debug = format!("{:?}", part);
-        assert!(debug.contains("https://example.com/img.png"));
+        assert!(!debug.contains("SECRET_TOKEN"));
+        assert!(!debug.contains("https://example.com"));
+        assert!(debug.contains("redacted"));
+        assert!(debug.contains("ImageUrl"));
     }
 
     #[test]
