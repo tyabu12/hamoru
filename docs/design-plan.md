@@ -1566,7 +1566,8 @@ On error, clearly communicate "what happened" and "what the user should do."
 
 ## 12. Future Roadmap (Post v1.0)
 
-- OpenAI / Gemini Provider additions
+- OpenAI Provider (also serves as generic OpenAI-compatible adapter via `base_url` — covers DeepSeek, Groq, Mistral, Together, Fireworks, etc.)
+- Google Gemini Provider (requires dedicated adapter due to non-OpenAI API)
 - MCP (Model Context Protocol) integration
 - Additional collaboration patterns: `debate`, `consensus`
 - Workflow / agent collaboration visual editor (Web UI)

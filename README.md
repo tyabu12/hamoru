@@ -37,11 +37,15 @@ See [design-plan.md](docs/design-plan.md) for the full roadmap.
 | Provider | Type | Models (built-in catalog) | Status |
 |----------|------|---------------------------|--------|
 | [Anthropic](https://www.anthropic.com/) | Cloud API | `claude-sonnet-4-6`, `claude-haiku-4-5` | ✅ Implemented |
-| Google Gemini | Cloud API | — | 🔲 Planned |
 | [Ollama](https://ollama.com) | Local | `llama3.3:70b`, `qwen2.5-coder:14b` | ✅ Implemented |
 | OpenAI | Cloud API | — | 🔲 Planned |
+| Google Gemini | Cloud API | — | 🔲 Planned |
+| DeepSeek | OpenAI-compatible | — | 🔲 Planned |
+| Groq | OpenAI-compatible | — | 🔲 Planned |
 
 > Models listed above are from the built-in catalog with default pricing. You can configure any model your provider supports via `hamoru.yaml` — including custom cost overrides.
+>
+> Providers marked **OpenAI-compatible** will use the OpenAI adapter with a custom `base_url`. Any OpenAI-compatible API (Mistral, Together, Fireworks, etc.) can be configured the same way.
 
 ## 🏗️ Architecture
 
