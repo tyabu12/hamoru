@@ -1,7 +1,7 @@
 ---
 description: Orchestrate feature implementation from plan to PR — worktree isolation, TDD, review, and PR creation.
 allowed-tools: Read, Grep, Glob, Bash, Agent, Write, Edit, EnterWorktree, ExitWorktree
-argument-hint: <task-description | #issue-number | phase N>
+argument-hint: "[description | issue-number | phase N]"
 ---
 
 # /implement
