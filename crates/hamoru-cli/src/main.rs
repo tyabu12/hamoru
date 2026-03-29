@@ -1,5 +1,8 @@
 //! hamoru CLI — LLM Orchestration Infrastructure as Code.
 
+#[allow(dead_code)] // Wired into `hamoru serve` in commit 7
+mod server;
+
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
