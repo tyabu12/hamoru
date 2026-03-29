@@ -440,17 +440,35 @@ impl From<HamoruError> for ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, error_type, code) = classify_error(&self.0);
-        // TODO(Phase 5b): For the catch-all 500 case, consider returning a generic
-        // "Internal server error" message instead of self.0.to_string() to avoid
-        // leaking internal implementation details to API clients.
+
+        // Sanitize: 5xx errors get a generic message to prevent leaking
+        // internal details (provider names, SQL errors, etc.).
+        // 4xx errors are safe — they contain user-actionable guidance.
+        let message = if status.is_server_error() {
+            tracing::error!(error = %self.0, "Server error");
+            "Internal server error. Please try again later.".to_string()
+        } else {
+            self.0.to_string()
+        };
+
         let body = OaiErrorResponse {
             error: OaiErrorBody {
-                message: self.0.to_string(),
+                message,
                 error_type: error_type.to_string(),
                 code: code.map(|c| c.to_string()),
             },
         };
-        (status, Json(body)).into_response()
+
+        let mut response = (status, Json(body)).into_response();
+
+        // Add Retry-After header for rate limit errors
+        if let HamoruError::RateLimitExceeded { retry_after_secs } = &self.0
+            && let Ok(val) = axum::http::HeaderValue::from_str(&retry_after_secs.to_string())
+        {
+            response.headers_mut().insert("retry-after", val);
+        }
+
+        response
     }
 }
 
@@ -486,6 +504,16 @@ fn classify_error(err: &HamoruError) -> (StatusCode, &'static str, Option<&'stat
             StatusCode::BAD_GATEWAY,
             "server_error",
             Some("provider_request_failed"),
+        ),
+        HamoruError::Unauthorized { .. } => (
+            StatusCode::UNAUTHORIZED,
+            "authentication_error",
+            Some("invalid_api_key"),
+        ),
+        HamoruError::RateLimitExceeded { .. } => (
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limit_error",
+            Some("rate_limit_exceeded"),
         ),
         HamoruError::ConfigError { .. } => (StatusCode::BAD_REQUEST, "invalid_request_error", None),
         _ => (StatusCode::INTERNAL_SERVER_ERROR, "server_error", None),
@@ -909,5 +937,78 @@ mod tests {
         // First data line should have role
         let first: serde_json::Value = serde_json::from_str(data_lines[0]).unwrap();
         assert_eq!(first["choices"][0]["delta"]["role"], "assistant");
+    }
+
+    #[test]
+    fn classify_error_unauthorized_returns_401() {
+        let err = HamoruError::Unauthorized {
+            reason: "invalid API key".to_string(),
+        };
+        let (status, error_type, code) = classify_error(&err);
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(error_type, "authentication_error");
+        assert_eq!(code, Some("invalid_api_key"));
+    }
+
+    #[test]
+    fn classify_error_rate_limit_returns_429() {
+        let err = HamoruError::RateLimitExceeded {
+            retry_after_secs: 5,
+        };
+        let (status, error_type, code) = classify_error(&err);
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(error_type, "rate_limit_error");
+        assert_eq!(code, Some("rate_limit_exceeded"));
+    }
+
+    #[test]
+    fn api_error_5xx_does_not_leak_details() {
+        let err = ApiError(HamoruError::ProviderUnavailable {
+            provider: "anthropic".to_string(),
+            reason: "API key sk-ant-secret-key is invalid".to_string(),
+        });
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        // Extract body synchronously via pollable future
+        let body = response.into_body();
+        let bytes = futures::executor::block_on(async {
+            axum::body::to_bytes(body, usize::MAX).await.unwrap()
+        });
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+        // Must NOT contain the actual error details
+        let message = json["error"]["message"].as_str().unwrap();
+        assert_eq!(message, "Internal server error. Please try again later.");
+        assert!(!message.contains("sk-ant"));
+        assert!(!message.contains("anthropic"));
+    }
+
+    #[test]
+    fn api_error_4xx_includes_actionable_message() {
+        let err = ApiError(HamoruError::Unauthorized {
+            reason: "missing Authorization header".to_string(),
+        });
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        let body = response.into_body();
+        let bytes = futures::executor::block_on(async {
+            axum::body::to_bytes(body, usize::MAX).await.unwrap()
+        });
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+        let message = json["error"]["message"].as_str().unwrap();
+        assert!(message.contains("Authorization: Bearer"));
+    }
+
+    #[test]
+    fn api_error_rate_limit_includes_retry_after_header() {
+        let err = ApiError(HamoruError::RateLimitExceeded {
+            retry_after_secs: 42,
+        });
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers().get("retry-after").unwrap(), "42");
     }
 }

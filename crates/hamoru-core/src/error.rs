@@ -193,6 +193,27 @@ pub enum HamoruError {
         iterations: u32,
     },
 
+    // --- API Server errors (Phase 5b) ---
+    /// API request rejected: missing or invalid API key.
+    ///
+    /// Distinct from `CredentialNotFound` (missing provider env var at startup).
+    /// This variant is for runtime per-request authentication failures.
+    #[error("Authentication failed: {reason}. Provide a valid API key via Authorization: Bearer header.")]
+    Unauthorized {
+        /// Human-readable reason (e.g., "invalid API key", "missing Authorization header").
+        reason: String,
+    },
+
+    /// API request rate limited: token bucket exhausted.
+    ///
+    /// Distinct from `CostLimitExceeded` (budget-based limit).
+    /// This variant is for request-rate throttling.
+    #[error("Rate limit exceeded. Retry after {retry_after_secs} seconds.")]
+    RateLimitExceeded {
+        /// Seconds until the next token is available.
+        retry_after_secs: u64,
+    },
+
     // --- Config errors ---
     /// Configuration file is invalid or malformed.
     #[error("Invalid configuration: {reason}")]
