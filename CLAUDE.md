@@ -104,6 +104,14 @@ Write subject lines that are vivid and concise — prefer active, expressive ver
 
 Prefix the subject line with a single emoji that captures the spirit of the change (e.g., `✨ feat: teach Policy Engine to play favorites`, `🐛 fix: stop workflows from ghosting mid-step`, `♻️ refactor: untangle provider spaghetti`). One emoji only — this is seasoning, not the main course.
 
+## Issue Filing
+
+- **bug / chore**: Include a **Triage** section with:
+  - **Impact**: severity and blast radius (e.g., "silent data loss in streaming", "cosmetic log noise")
+  - **When to fix**: target Phase or milestone (e.g., "Phase 5", "before v1.0", "nice-to-have")
+- **feat**: Triage section is not required
+- Include: root cause analysis, fix options, affected code paths, and cross-references (related PRs, design-plan sections)
+
 ## Decision Records (ADR)
 
 - Record architectural decisions in `docs/decisions/` as ADR
